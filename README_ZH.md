@@ -1,19 +1,20 @@
 # wilkques/ssh
 
-PHP 用的 SSH local port-forward tunnel、遠端指令執行、SFTP 檔案傳輸套件。
+PHP 用的 SSH local port-forward tunnel、遠端指令執行、SFTP/SCP 檔案傳輸套件。
 
-三個各自獨立、可單獨使用的元件：
+四個各自獨立、可單獨使用的元件：
 
 - **`Tunnel`** — `ssh -L` local port forward（例如：連只白名單跳板機來源的資料庫）。
 - **`Exec`** — 透過 `ssh` 在遠端主機執行單一指令。
 - **`Sftp`** — 用真正的 `sftp` CLI batch 模式做 `put`/`get`/`nlist`。
+- **`Scp`** — 用真正的 `scp` binary 做 `put`/`get`。
 
-**零 Composer 依賴。** 三個元件都是直接 shell 出去呼叫系統的 `ssh`/`sftp`。
+**零 Composer 依賴。** 四個元件都是直接 shell 出去呼叫系統的 `ssh`/`sftp`/`scp`。
 
 ## 環境需求
 
 - PHP >= 5.3
-- `PATH` 裡要有 `ssh`（三個元件都需要；`Sftp` 另外需要 `sftp`）
+- `PATH` 裡要有 `ssh`（四個元件都需要；`Sftp` 另外需要 `sftp`，`Scp` 另外需要 `scp`）
 - `proc_open` 不能被禁用
 
 ## 安裝
@@ -78,6 +79,23 @@ $files = $sftp->nlist('/var/log/nginx');
 
 **已知限制：** `nlist()` 的輸出解析是針對標準 OpenSSH `sftp -q -b` 的 batch 輸出格式；少見的 `sftp` 版本輸出格式可能不同。
 
+## `Scp`
+
+```php
+use Wilkques\Ssh\Scp;
+
+$scp = new Scp();
+
+$scp->setSshIp('10.10.2.58')
+    ->setUser('deploy')
+    ->setIdRsaPath('/home/me/.ssh/id_rsa');
+
+$scp->put('/remote/path/backup.sql.gz', '/local/path/backup.sql.gz');
+$scp->get('/remote/path/access.log.gz', '/local/path/access.log.gz');
+```
+
+跟 `Sftp` 一樣是 `put($remote, $local)` / `get($remote, $local)` 的參數順序，只是底層走的是真正的 `scp` binary，不是 `sftp`——適合目標主機只開 `scp`（舊協定）沒開 SFTP 子系統的情況。結束碼非 0 會丟 `Wilkques\Ssh\Exceptions\ScpException`（含 stderr）。
+
 ## 非互動式密碼登入
 
 三個元件都可以呼叫 `setPassword($password)` 做免金鑰登入——做法是寫一個暫存的 `SSH_ASKPASS` 腳本，呼叫期間把相關環境變數指過去，結束後清掉，這是常見的 `ssh`/`scp` 自動化技巧。沒設密碼時，底層程序會直接沿用呼叫端的 stdin/stdout/stderr，讓真正的 binary 可以互動式提示輸入或直接用金鑰登入。
@@ -92,7 +110,7 @@ try {
 } catch (\Wilkques\Ssh\Exceptions\TunnelException $e) {
     // ...
 } catch (\Wilkques\Ssh\Exceptions\SshException $e) {
-    // 同時接住 Tunnel/Exec/Sftp 的例外
+    // 同時接住 Tunnel/Exec/Sftp/Scp 的例外
 }
 ```
 

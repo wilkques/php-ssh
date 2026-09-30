@@ -1,19 +1,20 @@
 # wilkques/ssh
 
-SSH local port-forward tunneling, remote command execution, and SFTP file transfer for PHP.
+SSH local port-forward tunneling, remote command execution, and SFTP/SCP file transfer for PHP.
 
-Three independent components, each usable on its own:
+Four independent components, each usable on its own:
 
 - **`Tunnel`** — `ssh -L` local port forwarding (e.g. reach a database that only whitelists connections from a jump box).
 - **`Exec`** — run a single command on a remote host over `ssh`.
 - **`Sftp`** — `put`/`get`/`nlist` over the real `sftp` CLI in batch mode.
+- **`Scp`** — `put`/`get` over the real `scp` binary.
 
-**Zero Composer dependencies.** Every component shells out to the system `ssh`/`sftp` binaries.
+**Zero Composer dependencies.** Every component shells out to the system `ssh`/`sftp`/`scp` binaries.
 
 ## Requirements
 
 - PHP >= 5.3
-- The `ssh` binary in `PATH` (all three components need it; `Sftp` also needs `sftp`)
+- The `ssh` binary in `PATH` (all four components need it; `Sftp` also needs `sftp`, `Scp` also needs `scp`)
 - `proc_open` must not be disabled
 
 ## Install
@@ -78,6 +79,23 @@ Remote path comes first in `put()`/`get()`. Uses the real `sftp` binary in batch
 
 **Known caveat:** `nlist()`'s output parsing targets standard OpenSSH `sftp -q -b` batch output; unusual `sftp` builds may format `ls` output differently.
 
+## `Scp`
+
+```php
+use Wilkques\Ssh\Scp;
+
+$scp = new Scp();
+
+$scp->setSshIp('10.10.2.58')
+    ->setUser('deploy')
+    ->setIdRsaPath('/home/me/.ssh/id_rsa');
+
+$scp->put('/remote/path/backup.sql.gz', '/local/path/backup.sql.gz');
+$scp->get('/remote/path/access.log.gz', '/local/path/access.log.gz');
+```
+
+Same `put($remote, $local)` / `get($remote, $local)` shape as `Sftp`, but over the real `scp` binary instead of `sftp` — useful when a target host only has the legacy `scp` protocol enabled. Throws `Wilkques\Ssh\Exceptions\ScpException` (including stderr) on a non-zero exit.
+
 ## Non-interactive password auth
 
 Call `setPassword($password)` on any of the three components to authenticate without a key. This writes a temporary `SSH_ASKPASS` helper script and points the relevant environment variables at it for the duration of the call, then cleans up — the same technique commonly used for scripted `ssh`/`scp` automation. Without a password set, the underlying process inherits the caller's stdin/stdout/stderr so the real binary can prompt interactively or use key auth directly.
@@ -92,7 +110,7 @@ try {
 } catch (\Wilkques\Ssh\Exceptions\TunnelException $e) {
     // ...
 } catch (\Wilkques\Ssh\Exceptions\SshException $e) {
-    // catches Tunnel/Exec/Sftp exceptions alike
+    // catches Tunnel/Exec/Sftp/Scp exceptions alike
 }
 ```
 
