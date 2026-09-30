@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  unit:
+    name: "PHPUnit (PHP ${{ matrix.php }}, ubuntu)"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # No optional dependency to gate on (this package has zero Composer
+        # dependencies beyond PHP itself), so every version runs the same
+        # steps — unlike a design that wraps phpseclib/phpseclib (which
+        # itself requires PHP >=8.1), Exec/Sftp work down to 5.3 here too.
+        php: ['5.3', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run unit test suites
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp
+
+      - name: Run Tunnel integration test (no real sshd needed)
+        if: ${{ matrix.php == '8.3' }}
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration --filter TunnelIntegrationTest
+        env:
+          SSH_TUNNEL_INTEGRATION: '1'
+
+  windows:
+    name: "PHPUnit (PHP ${{ matrix.php }}, windows)"
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Narrower than the Linux matrix on purpose: this leg exists
+        # specifically to cover Tunnel's Windows-only proc_open(bypass_shell)
+        # + taskkill behavior, which no wilkques/* package's CI has ever
+        # actually run on Windows before this package.
+        php: ['7.4', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run unit test suites
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp
+
+      - name: Run Tunnel integration test (real proc kill on real Windows)
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration --filter TunnelIntegrationTest
+        env:
+          SSH_TUNNEL_INTEGRATION: '1'
+
+  integration-ssh:
+    name: "Exec/Sftp integration (real local sshd)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Start a throwaway local sshd
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y openssh-server
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/wilkques_ssh_ci_key
+          cat ~/.ssh/wilkques_ssh_ci_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo service ssh start
+
+      - name: Run Exec/Sftp integration tests
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration
+        env:
+          SSH_EXEC_INTEGRATION: '1'
+          SSH_SFTP_INTEGRATION: '1'
+          SSH_INTEGRATION_HOST: '127.0.0.1'
+          # "runner" is the fixed OS login on GitHub-hosted ubuntu-latest
+          # runners — not github.actor (that's the GitHub *account*, unrelated
+          # to the local unix account sshd is authenticating against here).
+          SSH_INTEGRATION_USER: runner
+          SSH_INTEGRATION_KEY: /home/runner/.ssh/wilkques_ssh_ci_key

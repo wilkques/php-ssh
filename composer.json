@@ -1,0 +1,23 @@
+{
+    "name": "wilkques/ssh",
+    "description": "SSH local port-forward tunneling, remote command execution, and SFTP file transfer for PHP — wraps the system ssh/sftp binaries, no protocol library dependency",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=5.3"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "*",
+        "mockery/mockery": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Wilkques\\Ssh\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Wilkques\\Ssh\\Tests\\": "tests/"
+        }
+    }
+}

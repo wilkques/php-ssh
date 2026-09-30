@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit backupGlobals="false"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+         convertErrorsToExceptions="true"
+         convertNoticesToExceptions="true"
+         convertWarningsToExceptions="true"
+         verbose="true"
+>
+    <testsuites>
+        <testsuite name="Tunnel">
+            <file>./tests/TunnelTest.php</file>
+        </testsuite>
+        <testsuite name="Exec">
+            <file>./tests/ExecTest.php</file>
+        </testsuite>
+        <testsuite name="Sftp">
+            <file>./tests/SftpTest.php</file>
+        </testsuite>
+        <testsuite name="Integration">
+            <directory suffix="Test.php">./tests/Integration</directory>
+        </testsuite>
+    </testsuites>
+    <filter>
+        <whitelist addUncoveredFilesFromWhitelist="true">
+            <directory suffix=".php">./src</directory>
+        </whitelist>
+    </filter>
+</phpunit>
