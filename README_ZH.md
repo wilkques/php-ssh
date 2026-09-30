@@ -102,6 +102,8 @@ try {
 
 `phpseclib/phpseclib` 純粹被拿來當 **API 設計參考**：`Exec::exec()`、`Sftp::put()/get()/nlist()` 刻意比照 phpseclib 自己 `SSH2`/`SFTP` 的方法名稱跟參數順序，讓熟悉 phpseclib 的人一看就會用——但底層實作是 shell 出去呼叫系統的 `ssh`/`sftp`，完全沒碰 phpseclib 的程式碼。
 
+**範圍說明清楚一點：** phpseclib 是一整套 MIT 授權、純 PHP 實作的加密/PKI 工具箱——SSH-2、SFTP、X.509、任意精度整數運算函式庫、Ed25519/Ed449/Curve25519/Curve449、ECDSA/ECDH（支援 66 條曲線）、RSA（符合 PKCS#1 v2.2）、DSA/DH、DES/3DES/RC4/Rijndael/AES/Blowfish/Twofish/Salsa20/ChaCha20、GCM/Poly1305 等等。`wilkques/ssh` 只重疊到其中很小一塊——跑遠端指令、傳檔案——證書、金鑰產生、或 phpseclib 其他任何加密原語都完全沒碰。如果你需要那些東西，該用的還是 phpseclib，跟下面講的東西無關。
+
 - **`Tunnel`會存在，是因為 phpseclib 完全沒有 local port-forward 的能力。** 這點已經查證過（直接看已安裝的 `phpseclib4\Net\SSH2` 原始碼，沒有 `direct-tcpip` channel 的實作），加上長年掛著沒解決的上游 issue [phpseclib/phpseclib#261](https://github.com/phpseclib/phpseclib/issues/261)。這不是依賴偏好的問題——這個能力目前沒有純 PHP 的替代方案。
 - **`Exec`/`Sftp` 也選擇 shell out，即使 phpseclib 其實做得到這兩件事**，換來的是：整個套件用同一套實作策略、同一個 PHP 版本下限（`>=5.3`，phpseclib `^4.0` 自己要求 `>=8.1`）、以及零 Composer 依賴。代價是：`wilkques/ssh` 需要系統真的有 `ssh`/`sftp` 這兩支 binary 在 `PATH` 裡，不像 phpseclib 是純 PHP、自包含的實作。
 
