@@ -7,14 +7,12 @@ use Wilkques\Ssh\Support\AbstractSshProcess;
 
 /**
  * File transfer over the real sftp CLI in batch mode (genuinely speaking the
- * SFTP subsystem, not scp). Method names (put/get/nlist) match phpseclib's
- * SFTP class for a familiar API, but the implementation shells out to the
- * system sftp binary — no phpseclib dependency at all.
+ * SFTP subsystem, not scp).
  */
 class Sftp extends AbstractSshProcess
 {
     /**
-     * 上傳本機檔案到遠端（引數順序比照 phpseclib SFTP::put($remote, $local)）
+     * 上傳本機檔案到遠端
      *
      * @param string $remotePath
      * @param string $localPath
@@ -27,7 +25,7 @@ class Sftp extends AbstractSshProcess
     }
 
     /**
-     * 從遠端下載檔案到本機（引數順序比照 phpseclib SFTP::get($remote, $local)）
+     * 從遠端下載檔案到本機
      *
      * @param string $remotePath
      * @param string $localPath
@@ -40,7 +38,7 @@ class Sftp extends AbstractSshProcess
     }
 
     /**
-     * 列出遠端目錄內容（比照 phpseclib SFTP::nlist()）
+     * 列出遠端目錄內容
      *
      * known fragility: sftp batch-mode output formatting varies slightly
      * across OpenSSH versions/platforms; this parses standard OpenSSH

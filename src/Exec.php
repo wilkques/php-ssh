@@ -6,9 +6,7 @@ use Wilkques\Ssh\Exceptions\ExecException;
 use Wilkques\Ssh\Support\AbstractSshProcess;
 
 /**
- * Runs a single command on a remote host over ssh. Method name matches
- * phpseclib's SSH2::exec() for a familiar API, but the implementation
- * shells out to the system ssh binary — no phpseclib dependency at all.
+ * Runs a single command on a remote host over ssh.
  */
 class Exec extends AbstractSshProcess
 {

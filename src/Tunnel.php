@@ -6,9 +6,7 @@ use Wilkques\Ssh\Exceptions\TunnelException;
 use Wilkques\Ssh\Support\AbstractSshProcess;
 
 /**
- * SSH local port forward (ssh -L). phpseclib has no port-forwarding support
- * at all (see https://github.com/phpseclib/phpseclib/issues/261), so this
- * shells out to the system ssh binary instead.
+ * SSH local port forward (ssh -L), by shelling out to the system ssh binary.
  */
 class Tunnel extends AbstractSshProcess
 {
