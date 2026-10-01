@@ -485,6 +485,197 @@ class SftpTest extends TestCase
         $this->assertSame(array(), $calls);
     }
 
+    public function testStatReturnsDecodedAttrs()
+    {
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 1, SftpPacket::encodeAttrs(array('size' => 1234)));
+
+        $attrs = $this->sftp->stat('/remote/path/file.log');
+
+        $this->assertEquals(1234, $attrs['size']);
+        $this->assertNextRequestIs(SftpPacket::TYPE_STAT);
+    }
+
+    public function testRealpathReturnsResolvedPath()
+    {
+        $namePayload = SftpPacket::uint32ToBytes(1)
+            . SftpPacket::packString('/home/deploy/file.log') . SftpPacket::packString('irrelevant') . SftpPacket::uint32ToBytes(0);
+        $this->transport->queueResponse(SftpPacket::TYPE_NAME, 1, $namePayload);
+
+        $resolved = $this->sftp->realpath('~/file.log');
+
+        $this->assertSame('/home/deploy/file.log', $resolved);
+        $this->assertNextRequestIs(SftpPacket::TYPE_REALPATH);
+    }
+
+    public function testRealpathThrowsWhenServerReturnsNoEntries()
+    {
+        $this->transport->queueStatus(1, SftpPacket::STATUS_EOF);
+
+        $this->expectExceptionCompat('Wilkques\\Ssh\\Exceptions\\SftpException');
+
+        $this->sftp->realpath('/remote/odd');
+    }
+
+    public function testPutThrowsWhenLocalPathIsADirectoryWithoutRecursiveOption()
+    {
+        $localDir = $this->tmpDir . '/upload-dir';
+        mkdir($localDir);
+
+        $this->expectExceptionCompat('Wilkques\\Ssh\\Exceptions\\SftpException');
+
+        $this->sftp->put('/remote/upload-dir', $localDir);
+    }
+
+    public function testPutRecursiveUploadsDirectoryTree()
+    {
+        $localDir = $this->tmpDir . '/upload-tree';
+        mkdir($localDir . '/sub', 0777, true);
+        file_put_contents($localDir . '/file1.txt', 'one');
+        file_put_contents($localDir . '/sub/file2.txt', 'two');
+
+        // scandir() sorts ascending, so file1.txt is visited before sub/.
+        $this->transport->queueStatus(1, SftpPacket::STATUS_NO_SUCH_FILE);    // exists('/remote/tree') -> LSTAT
+        $this->transport->queueStatus(2, SftpPacket::STATUS_OK);              // mkdir('/remote/tree')
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 3, SftpPacket::packString('h1')); // open file1.txt
+        $this->transport->queueStatus(4, SftpPacket::STATUS_OK);              // write file1.txt
+        $this->transport->queueStatus(5, SftpPacket::STATUS_OK);              // close file1.txt
+        $this->transport->queueStatus(6, SftpPacket::STATUS_NO_SUCH_FILE);    // exists('/remote/tree/sub') -> LSTAT
+        $this->transport->queueStatus(7, SftpPacket::STATUS_OK);              // mkdir('/remote/tree/sub')
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 8, SftpPacket::packString('h2')); // open file2.txt
+        $this->transport->queueStatus(9, SftpPacket::STATUS_OK);              // write file2.txt
+        $this->transport->queueStatus(10, SftpPacket::STATUS_OK);             // close file2.txt
+
+        $this->sftp->put('/remote/tree', $localDir, array('recursive' => true));
+
+        $this->assertNextRequestIs(SftpPacket::TYPE_LSTAT);
+        $this->assertNextRequestIs(SftpPacket::TYPE_MKDIR);
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $this->assertNextRequestIs(SftpPacket::TYPE_WRITE);
+        $this->assertNextRequestIs(SftpPacket::TYPE_CLOSE);
+        $this->assertNextRequestIs(SftpPacket::TYPE_LSTAT);
+        $payload = $this->assertNextRequestIs(SftpPacket::TYPE_MKDIR);
+        $offset = 0;
+        $this->assertSame('/remote/tree/sub', SftpPacket::unpackString($payload, $offset));
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $this->assertNextRequestIs(SftpPacket::TYPE_WRITE);
+        $this->assertNextRequestIs(SftpPacket::TYPE_CLOSE);
+        $this->assertTrue($this->noMoreRequests());
+    }
+
+    public function testPutResumeOpensWithoutTruncateAndWritesFromRemoteSize()
+    {
+        $localFile = $this->tmpDir . '/resume-upload.txt';
+        file_put_contents($localFile, '0123456789');
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 2, SftpPacket::encodeAttrs(array('size' => 5)));
+        $this->transport->queueStatus(3, SftpPacket::STATUS_OK);
+        $this->transport->queueStatus(4, SftpPacket::STATUS_OK);
+
+        $this->sftp->put('/remote/resume-upload.txt', $localFile, array('resume' => true));
+
+        $payload = $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $offset = 0;
+        SftpPacket::unpackString($payload, $offset);
+        $pflags = SftpPacket::bytesToUint32(substr($payload, $offset, 4));
+        $this->assertSame(SftpPacket::FXF_WRITE | SftpPacket::FXF_CREAT, $pflags);
+        $this->assertSame(0, $pflags & SftpPacket::FXF_TRUNC);
+
+        $this->assertNextRequestIs(SftpPacket::TYPE_FSTAT);
+
+        $payload = $this->assertNextRequestIs(SftpPacket::TYPE_WRITE);
+        $offset = 0;
+        SftpPacket::unpackString($payload, $offset);
+        $this->assertEquals(5, SftpPacket::bytesToUint64(substr($payload, $offset, 8)));
+        $offset += 8;
+        $this->assertSame('56789', SftpPacket::unpackString($payload, $offset));
+    }
+
+    public function testGetRecursiveDownloadsDirectoryTree()
+    {
+        $localDir = $this->tmpDir . '/download-tree';
+
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 1, SftpPacket::encodeAttrs(array('permissions' => Sftp::S_IFDIR | 0755)));
+
+        // nlist('/remote/tree'): OPENDIR + one READDIR page + CLOSE.
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 2, SftpPacket::packString('d1'));
+        $entries = SftpPacket::uint32ToBytes(1)
+            . SftpPacket::packString('file.txt') . SftpPacket::packString('file.txt') . SftpPacket::uint32ToBytes(0);
+        $this->transport->queueResponse(SftpPacket::TYPE_NAME, 3, $entries);
+        $this->transport->queueStatus(4, SftpPacket::STATUS_EOF);
+        $this->transport->queueStatus(5, SftpPacket::STATUS_OK);
+
+        // stat('/remote/tree/file.txt') — a regular file.
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 6, SftpPacket::encodeAttrs(array('permissions' => 0100644, 'size' => 3)));
+
+        // getFile(): OPEN, FSTAT, READ, CLOSE.
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 7, SftpPacket::packString('h1'));
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 8, SftpPacket::encodeAttrs(array('size' => 3)));
+        $this->transport->queueResponse(SftpPacket::TYPE_DATA, 9, SftpPacket::packString('abc'));
+        $this->transport->queueStatus(10, SftpPacket::STATUS_OK);
+
+        $this->sftp->get('/remote/tree', $localDir, array('recursive' => true));
+
+        $this->assertTrue(is_dir($localDir));
+        $this->assertSame('abc', file_get_contents($localDir . DIRECTORY_SEPARATOR . 'file.txt'));
+
+        $this->assertNextRequestIs(SftpPacket::TYPE_STAT);
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPENDIR);
+        $this->assertNextRequestIs(SftpPacket::TYPE_READDIR);
+        $this->assertNextRequestIs(SftpPacket::TYPE_READDIR);
+        $this->assertNextRequestIs(SftpPacket::TYPE_CLOSE);
+        $this->assertNextRequestIs(SftpPacket::TYPE_STAT);
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $this->assertNextRequestIs(SftpPacket::TYPE_FSTAT);
+        $this->assertNextRequestIs(SftpPacket::TYPE_READ);
+        $this->assertNextRequestIs(SftpPacket::TYPE_CLOSE);
+        $this->assertTrue($this->noMoreRequests());
+    }
+
+    public function testGetResumeAppendsFromLocalFileSize()
+    {
+        $localFile = $this->tmpDir . '/resume-download.txt';
+        file_put_contents($localFile, '01234');
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 2, SftpPacket::encodeAttrs(array('size' => 10)));
+        $this->transport->queueResponse(SftpPacket::TYPE_DATA, 3, SftpPacket::packString('56789'));
+        $this->transport->queueStatus(4, SftpPacket::STATUS_OK);
+
+        $this->sftp->get('/remote/resume-download.txt', $localFile, array('resume' => true));
+
+        $this->assertSame('0123456789', file_get_contents($localFile));
+
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $this->assertNextRequestIs(SftpPacket::TYPE_FSTAT);
+        $payload = $this->assertNextRequestIs(SftpPacket::TYPE_READ);
+        $offset = 0;
+        SftpPacket::unpackString($payload, $offset);
+        $this->assertEquals(5, SftpPacket::bytesToUint64(substr($payload, $offset, 8)));
+    }
+
+    public function testGetResumeFallsBackToFullDownloadWhenLocalFileIsLargerThanRemote()
+    {
+        $localFile = $this->tmpDir . '/resume-download.txt';
+        file_put_contents($localFile, '0123456789');
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 2, SftpPacket::encodeAttrs(array('size' => 5)));
+        $this->transport->queueResponse(SftpPacket::TYPE_DATA, 3, SftpPacket::packString('01234'));
+        $this->transport->queueStatus(4, SftpPacket::STATUS_OK);
+
+        $this->sftp->get('/remote/resume-download.txt', $localFile, array('resume' => true));
+
+        $this->assertSame('01234', file_get_contents($localFile));
+
+        $this->assertNextRequestIs(SftpPacket::TYPE_OPEN);
+        $this->assertNextRequestIs(SftpPacket::TYPE_FSTAT);
+        $payload = $this->assertNextRequestIs(SftpPacket::TYPE_READ);
+        $offset = 0;
+        SftpPacket::unpackString($payload, $offset);
+        $this->assertEquals(0, SftpPacket::bytesToUint64(substr($payload, $offset, 8)));
+    }
+
     /**
      * @param string $needle
      * @param string $haystack

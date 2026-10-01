@@ -27,20 +27,55 @@ class Sftp extends AbstractSshProcess
      */
     const CHUNK_SIZE = 32768;
 
+    /** S_IFMT: the file-type bits within a POSIX mode. SFTPv3's `permissions`
+     * ATTRS field is the full st_mode (type bits included), unlike later
+     * SFTP protocol versions, which split file type into its own field. */
+    const S_IFMT = 0170000;
+    const S_IFDIR = 0040000;
+
     /**
-     * 上傳本機檔案到遠端
+     * 上傳本機檔案到遠端。$localPath 若是本機目錄，需要在 $options 傳
+     * array('recursive' => true) 才會遞迴上傳整個目錄樹，否則丟例外；
+     * array('resume' => true) 則是從遠端現有檔案大小的地方接著上傳
+     * （不驗證內容是否相符，是最單純的「接著位移量繼續傳」）
      *
      * @param string $remotePath
      * @param string $localPath
+     * @param array $options 'recursive' => bool, 'resume' => bool
      *
      * @return void
      */
-    public function put($remotePath, $localPath)
+    public function put($remotePath, $localPath, array $options = array())
     {
+        if (is_dir($localPath)) {
+            if (empty($options['recursive'])) {
+                throw $this->credentialException(sprintf(
+                    '%s is a local directory; pass array(\'recursive\' => true) to upload it',
+                    $localPath
+                ));
+            }
+
+            $this->putDirectory($remotePath, $localPath);
+
+            return;
+        }
+
         if (!is_file($localPath)) {
             throw $this->credentialException(sprintf('Unable to read local file: %s', $localPath));
         }
 
+        $this->putFile($remotePath, $localPath, !empty($options['resume']));
+    }
+
+    /**
+     * @param string $remotePath
+     * @param string $localPath
+     * @param bool $resume
+     *
+     * @return void
+     */
+    protected function putFile($remotePath, $localPath, $resume)
+    {
         $fp = @fopen($localPath, 'rb');
 
         if ($fp === false) {
@@ -50,15 +85,32 @@ class Sftp extends AbstractSshProcess
         $channel = $this->channel();
         $context = sprintf("put('%s')", $remotePath);
 
-        $openPayload = SftpPacket::packString($remotePath)
-            . SftpPacket::uint32ToBytes(SftpPacket::FXF_WRITE | SftpPacket::FXF_CREAT | SftpPacket::FXF_TRUNC)
-            . SftpPacket::encodeAttrs(array());
+        // Resuming means NOT truncating an existing remote file — opening
+        // without FXF_TRUNC leaves whatever's already there in place so a
+        // subsequent WRITE at the resume offset only appends past it.
+        $pflags = SftpPacket::FXF_WRITE | SftpPacket::FXF_CREAT;
+
+        if (!$resume) {
+            $pflags |= SftpPacket::FXF_TRUNC;
+        }
+
+        $openPayload = SftpPacket::packString($remotePath) . SftpPacket::uint32ToBytes($pflags) . SftpPacket::encodeAttrs(array());
 
         $handle = $channel->expectHandle(SftpPacket::TYPE_OPEN, $openPayload, $context);
 
+        $startOffset = 0;
+
+        if ($resume) {
+            $attrs = $channel->expectAttrs(SftpPacket::TYPE_FSTAT, SftpPacket::packString($handle), $context);
+            $startOffset = isset($attrs['size']) ? $attrs['size'] : 0;
+
+            fseek($fp, $startOffset);
+        }
+
         $size = filesize($localPath);
+        $remaining = $size > $startOffset ? $size - $startOffset : 0;
         $chunkSize = self::CHUNK_SIZE;
-        $totalChunks = $size > 0 ? (int) ceil($size / $chunkSize) : 0;
+        $totalChunks = $remaining > 0 ? (int) ceil($remaining / $chunkSize) : 0;
 
         $progress = $this->progress;
 
@@ -66,7 +118,10 @@ class Sftp extends AbstractSshProcess
             $progress->reset();
         }
 
-        $transferred = 0;
+        // Starts at $startOffset (not 0) so a resumed transfer's progress
+        // reflects what the server already has, rather than restarting a
+        // caller's progress bar from zero.
+        $transferred = $startOffset;
         $chunkLengths = array();
 
         $caught = null;
@@ -74,8 +129,8 @@ class Sftp extends AbstractSshProcess
         try {
             $channel->pipeline(
                 $totalChunks,
-                function ($index) use ($fp, $chunkSize, $handle, &$chunkLengths) {
-                    $offset = $index * $chunkSize;
+                function ($index) use ($fp, $chunkSize, $handle, $startOffset, &$chunkLengths) {
+                    $offset = $startOffset + $index * $chunkSize;
                     $data = fread($fp, $chunkSize);
                     $data = $data === false ? '' : $data;
 
@@ -126,14 +181,70 @@ class Sftp extends AbstractSshProcess
     }
 
     /**
-     * 從遠端下載檔案到本機
-     *
      * @param string $remotePath
      * @param string $localPath
      *
      * @return void
      */
-    public function get($remotePath, $localPath)
+    protected function putDirectory($remotePath, $localPath)
+    {
+        if (!$this->exists($remotePath)) {
+            $this->mkdir($remotePath);
+        }
+
+        $entries = scandir($localPath);
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $localChild = rtrim($localPath, '/\\') . DIRECTORY_SEPARATOR . $entry;
+            $remoteChild = rtrim($remotePath, '/') . '/' . $entry;
+
+            if (is_dir($localChild)) {
+                $this->putDirectory($remoteChild, $localChild);
+            } else {
+                $this->putFile($remoteChild, $localChild, false);
+            }
+        }
+    }
+
+    /**
+     * 從遠端下載檔案到本機。$remotePath 若是遠端目錄，需要在 $options 傳
+     * array('recursive' => true) 才會遞迴下載整個目錄樹，否則丟例外；
+     * array('resume' => true) 則是從本機現有檔案大小的地方接著下載
+     * （不驗證內容是否相符）
+     *
+     * @param string $remotePath
+     * @param string $localPath
+     * @param array $options 'recursive' => bool, 'resume' => bool
+     *
+     * @return void
+     */
+    public function get($remotePath, $localPath, array $options = array())
+    {
+        if (!empty($options['recursive'])) {
+            $stat = $this->stat($remotePath);
+
+            if ($this->isDirectoryMode(isset($stat['permissions']) ? $stat['permissions'] : 0)) {
+                $this->getDirectory($remotePath, $localPath);
+
+                return;
+            }
+        }
+
+        $this->getFile($remotePath, $localPath, !empty($options['resume']));
+    }
+
+    /**
+     * @param string $remotePath
+     * @param string $localPath
+     * @param bool $resume
+     *
+     * @return void
+     */
+    protected function getFile($remotePath, $localPath, $resume)
     {
         $channel = $this->channel();
         $context = sprintf("get('%s')", $remotePath);
@@ -149,7 +260,22 @@ class Sftp extends AbstractSshProcess
         $attrs = $channel->expectAttrs(SftpPacket::TYPE_FSTAT, SftpPacket::packString($handle), $context);
         $size = isset($attrs['size']) ? $attrs['size'] : 0;
 
-        $fp = @fopen($localPath, 'wb');
+        $startOffset = 0;
+        $localMode = 'wb';
+
+        if ($resume && is_file($localPath)) {
+            $localSize = filesize($localPath);
+
+            // A local file bigger than the remote one isn't a sane resume
+            // point (nothing to continue from) — fall back to a full
+            // re-download rather than silently producing a truncated file.
+            if ($localSize <= $size) {
+                $startOffset = $localSize;
+                $localMode = 'ab';
+            }
+        }
+
+        $fp = @fopen($localPath, $localMode);
 
         if ($fp === false) {
             try {
@@ -161,8 +287,9 @@ class Sftp extends AbstractSshProcess
             throw $this->credentialException(sprintf('Unable to open local file for writing: %s', $localPath));
         }
 
+        $remaining = $size > $startOffset ? $size - $startOffset : 0;
         $chunkSize = self::CHUNK_SIZE;
-        $totalChunks = $size > 0 ? (int) ceil($size / $chunkSize) : 0;
+        $totalChunks = $remaining > 0 ? (int) ceil($remaining / $chunkSize) : 0;
 
         $progress = $this->progress;
 
@@ -170,15 +297,15 @@ class Sftp extends AbstractSshProcess
             $progress->reset();
         }
 
-        $transferred = 0;
+        $transferred = $startOffset;
 
         $caught = null;
 
         try {
             $channel->pipeline(
                 $totalChunks,
-                function ($index) use ($handle, $chunkSize) {
-                    $offset = $index * $chunkSize;
+                function ($index) use ($handle, $chunkSize, $startOffset) {
+                    $offset = $startOffset + $index * $chunkSize;
 
                     $payload = SftpPacket::packString($handle)
                         . SftpPacket::uint64ToBytes($offset)
@@ -234,6 +361,44 @@ class Sftp extends AbstractSshProcess
         if ($caught) {
             throw $caught;
         }
+    }
+
+    /**
+     * @param string $remotePath
+     * @param string $localPath
+     *
+     * @return void
+     */
+    protected function getDirectory($remotePath, $localPath)
+    {
+        if (!is_dir($localPath) && !@mkdir($localPath, 0777, true) && !is_dir($localPath)) {
+            throw $this->credentialException(sprintf('Unable to create local directory: %s', $localPath));
+        }
+
+        $names = $this->nlist($remotePath);
+
+        foreach ($names as $name) {
+            $remoteChild = rtrim($remotePath, '/') . '/' . $name;
+            $localChild = rtrim($localPath, '/\\') . DIRECTORY_SEPARATOR . $name;
+
+            $stat = $this->stat($remoteChild);
+
+            if ($this->isDirectoryMode(isset($stat['permissions']) ? $stat['permissions'] : 0)) {
+                $this->getDirectory($remoteChild, $localChild);
+            } else {
+                $this->getFile($remoteChild, $localChild, false);
+            }
+        }
+    }
+
+    /**
+     * @param int $permissions the ATTRS 'permissions' field (full st_mode, not just rwx bits)
+     *
+     * @return bool
+     */
+    protected function isDirectoryMode($permissions)
+    {
+        return ($permissions & self::S_IFMT) === self::S_IFDIR;
     }
 
     /**
@@ -419,6 +584,46 @@ class Sftp extends AbstractSshProcess
         }
 
         return true;
+    }
+
+    /**
+     * 取得遠端路徑的檔案資訊（會 follow symlink；要拿符號連結本身的資訊而不是
+     * 它指向的目標，請改用內部的 lstat 邏輯——目前沒有對外開放 lstat()，
+     * 因為 exists() 已經是唯一需要它的地方）。回傳的陣列視伺服器實際回報
+     * 的欄位而定，可能包含 'size'、'uid'、'gid'、'permissions'、'atime'、'mtime'
+     *
+     * @param string $remotePath
+     *
+     * @return array
+     */
+    public function stat($remotePath)
+    {
+        return $this->channel()->expectAttrs(
+            SftpPacket::TYPE_STAT,
+            SftpPacket::packString($remotePath),
+            sprintf("stat('%s')", $remotePath)
+        );
+    }
+
+    /**
+     * 請伺服器解析遠端路徑為絕對路徑（例如展開 `~`、處理 `..`）
+     *
+     * @param string $remotePath
+     *
+     * @return string
+     */
+    public function realpath($remotePath)
+    {
+        $channel = $this->channel();
+        $context = sprintf("realpath('%s')", $remotePath);
+
+        $entries = $channel->expectNameList(SftpPacket::TYPE_REALPATH, SftpPacket::packString($remotePath), $context);
+
+        if (empty($entries)) {
+            throw $this->credentialException(sprintf('%s: server returned no result', $context));
+        }
+
+        return $entries[0]['filename'];
     }
 
     /**

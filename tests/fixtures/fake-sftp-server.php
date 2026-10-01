@@ -251,9 +251,14 @@ while (true) {
             }
 
             $size = is_file($localPath) ? filesize($localPath) : 0;
+            // Deliberately NOT masked to the low 9 rwx bits: SFTPv3's
+            // `permissions` field is the full POSIX st_mode, file-type bits
+            // (S_IFDIR/S_IFREG/...) included — real OpenSSH reports it the
+            // same way, and Sftp::isDirectoryMode() depends on that for
+            // recursive put()/get() to tell files from directories.
             $attrsPayload = SftpPacket::encodeAttrs(array(
                 'size' => $size,
-                'permissions' => fileperms($localPath) & 0777,
+                'permissions' => fileperms($localPath),
             ));
 
             fakeSftpServerSend($stdout, SftpPacket::TYPE_ATTRS, $id, $attrsPayload);
@@ -317,6 +322,36 @@ while (true) {
             } else {
                 fakeSftpServerSendStatus($stdout, $id, SftpPacket::STATUS_FAILURE, 'rename failed');
             }
+            break;
+
+        case SftpPacket::TYPE_REALPATH:
+            $path = SftpPacket::unpackString($rest, $offset);
+
+            // Lexical-only normalization (collapse '.'/'..'/duplicate
+            // slashes) — real OpenSSH also resolves against the server's
+            // cwd and doesn't require the path to exist; this is enough to
+            // exercise Sftp::realpath()'s request/response handling.
+            $segments = array();
+
+            foreach (explode('/', $path) as $segment) {
+                if ($segment === '' || $segment === '.') {
+                    continue;
+                }
+
+                if ($segment === '..') {
+                    array_pop($segments);
+                    continue;
+                }
+
+                $segments[] = $segment;
+            }
+
+            $resolved = '/' . implode('/', $segments);
+
+            $namePayload = SftpPacket::uint32ToBytes(1)
+                . SftpPacket::packString($resolved) . SftpPacket::packString($resolved) . SftpPacket::uint32ToBytes(0);
+
+            fakeSftpServerSend($stdout, SftpPacket::TYPE_NAME, $id, $namePayload);
             break;
 
         case SftpPacket::TYPE_OPENDIR:

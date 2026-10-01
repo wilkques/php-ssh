@@ -4,6 +4,7 @@ namespace Wilkques\Ssh\Tests\Integration;
 
 use PHPUnit\Framework\Attributes\Group;
 use Wilkques\Ssh\Exceptions\SftpException;
+use Wilkques\Ssh\Sftp;
 use Wilkques\Ssh\Support\ProcessRunner;
 use Wilkques\Ssh\Support\ProcessTransport;
 use Wilkques\Ssh\Support\SftpChannel;
@@ -216,5 +217,72 @@ class SftpPipeIntegrationTest extends TestCase
         $this->channel->expectStatusOk(SftpPacket::TYPE_CLOSE, SftpPacket::packString($handle), 'close');
 
         $this->assertSame($payload, file_get_contents($this->serverRoot . '/big.bin'));
+    }
+
+    /**
+     * Drives the real Sftp class (not raw SftpChannel calls, like the tests
+     * above) against the same real-pipe channel, via the setChannel() seam
+     * unit tests also use — proving recursive put()/get() work end to end
+     * over a real process, not just against FakeTransport.
+     */
+    public function testSftpRecursivePutAndGetRoundTripOverRealPipes()
+    {
+        $sftp = new Sftp();
+        $sftp->setChannel($this->channel);
+
+        $localTree = $this->tmpDir . '/tree';
+        mkdir($localTree . '/sub', 0777, true);
+        file_put_contents($localTree . '/a.txt', 'alpha');
+        file_put_contents($localTree . '/sub/b.txt', 'beta');
+
+        $sftp->put('/tree', $localTree, array('recursive' => true));
+
+        $this->assertSame('alpha', file_get_contents($this->serverRoot . '/tree/a.txt'));
+        $this->assertSame('beta', file_get_contents($this->serverRoot . '/tree/sub/b.txt'));
+
+        $downloadTree = $this->tmpDir . '/downloaded-tree';
+        $sftp->get('/tree', $downloadTree, array('recursive' => true));
+
+        $this->assertSame('alpha', file_get_contents($downloadTree . '/a.txt'));
+        $this->assertSame('beta', file_get_contents($downloadTree . '/sub/b.txt'));
+    }
+
+    public function testSftpResumeOverRealPipes()
+    {
+        $sftp = new Sftp();
+        $sftp->setChannel($this->channel);
+
+        // Simulate a previous, interrupted upload having already landed the
+        // first half of the file server-side.
+        file_put_contents($this->serverRoot . '/resume.txt', '01234');
+
+        $localFile = $this->tmpDir . '/resume.txt';
+        file_put_contents($localFile, '0123456789');
+
+        $sftp->put('/resume.txt', $localFile, array('resume' => true));
+
+        $this->assertSame('0123456789', file_get_contents($this->serverRoot . '/resume.txt'));
+
+        // Simulate a previously interrupted download the same way, then
+        // resume it back from the (now complete) remote file.
+        $localDownload = $this->tmpDir . '/resume-download.txt';
+        file_put_contents($localDownload, '01234');
+
+        $sftp->get('/resume.txt', $localDownload, array('resume' => true));
+
+        $this->assertSame('0123456789', file_get_contents($localDownload));
+    }
+
+    public function testSftpStatAndRealpathOverRealPipes()
+    {
+        $sftp = new Sftp();
+        $sftp->setChannel($this->channel);
+
+        file_put_contents($this->serverRoot . '/file.txt', 'hello');
+
+        $stat = $sftp->stat('/file.txt');
+        $this->assertEquals(5, $stat['size']);
+
+        $this->assertSame('/a/b/file.txt', $sftp->realpath('/a/b/c/../file.txt'));
     }
 }
