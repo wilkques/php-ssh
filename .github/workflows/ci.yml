@@ -15,7 +15,7 @@ jobs:
         # No optional dependency to gate on (this package has zero Composer
         # dependencies beyond PHP itself), so every version runs the same
         # steps — Exec/Sftp work down to 5.3 here too.
-        php: ['5.3', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
+        php: ['5.3', '5.4', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
     steps:
       - uses: actions/checkout@v4
 
@@ -43,13 +43,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Narrower than the Linux matrix on purpose: this leg exists
-        # specifically to cover Tunnel's Windows-only proc_open(bypass_shell)
-        # + taskkill behavior, and Sftp/Scp's bidirectional pipe I/O against
+        # Full parity with the Linux matrix (not just a narrow subset):
+        # this leg covers Tunnel's Windows-only proc_open(bypass_shell) +
+        # taskkill behavior, and Sftp/Scp's bidirectional pipe I/O against
         # SftpChannel (via the fake-sftp-server fixture — see
-        # SftpPipeIntegrationTest) — neither had ever actually run on
-        # Windows in any wilkques/* package's CI before this one.
-        php: ['7.4', '8.3']
+        # SftpPipeIntegrationTest). The riskiest code in the channel is a
+        # Windows pipe's small, ~4KB default buffer, and that risk doesn't
+        # scale down just because a PHP version is old — 5.3/5.4/5.6 need
+        # the same Windows coverage as every newer version here does. None
+        # of this had ever actually run on Windows in any wilkques/*
+        # package's CI before this one.
+        php: ['5.3', '5.4', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
     steps:
       - uses: actions/checkout@v4
 
