@@ -413,6 +413,78 @@ class SftpTest extends TestCase
         $this->sftp->exists('/remote/path/forbidden.log');
     }
 
+    public function testPutReportsProgressForEachAcknowledgedChunk()
+    {
+        $localFile = $this->tmpDir . '/big.bin';
+        file_put_contents($localFile, str_repeat('A', Sftp::CHUNK_SIZE) . str_repeat('B', 100));
+        $totalSize = Sftp::CHUNK_SIZE + 100;
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueStatus(2, SftpPacket::STATUS_OK);
+        $this->transport->queueStatus(3, SftpPacket::STATUS_OK);
+        $this->transport->queueStatus(4, SftpPacket::STATUS_OK);
+
+        $calls = array();
+        // PHP 5.3 closures don't auto-bind $this, so this deliberately only
+        // captures a plain local variable by reference — no $this-> calls.
+        $this->sftp->setProgress(function ($transferred, $total, $path) use (&$calls) {
+            $calls[] = array($transferred, $total, $path);
+        });
+
+        $this->sftp->put('/remote/big.bin', $localFile);
+
+        // Progress only advances once each WRITE's ack comes back — two
+        // chunks in, two reports out, the second one at completion.
+        $this->assertSame(array(
+            array(Sftp::CHUNK_SIZE, $totalSize, '/remote/big.bin'),
+            array($totalSize, $totalSize, '/remote/big.bin'),
+        ), $calls);
+    }
+
+    public function testGetReportsProgressForEachReceivedChunk()
+    {
+        $localFile = $this->tmpDir . '/downloaded.bin';
+        $totalSize = Sftp::CHUNK_SIZE + 50;
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueResponse(SftpPacket::TYPE_ATTRS, 2, SftpPacket::encodeAttrs(array('size' => $totalSize)));
+        $this->transport->queueResponse(SftpPacket::TYPE_DATA, 3, SftpPacket::packString(str_repeat('A', Sftp::CHUNK_SIZE)));
+        $this->transport->queueResponse(SftpPacket::TYPE_DATA, 4, SftpPacket::packString(str_repeat('B', 50)));
+        $this->transport->queueStatus(5, SftpPacket::STATUS_OK);
+
+        $calls = array();
+        $this->sftp->setProgress(function ($transferred, $total, $path) use (&$calls) {
+            $calls[] = array($transferred, $total, $path);
+        });
+
+        $this->sftp->get('/remote/file.bin', $localFile);
+
+        $this->assertSame(array(
+            array(Sftp::CHUNK_SIZE, $totalSize, '/remote/file.bin'),
+            array($totalSize, $totalSize, '/remote/file.bin'),
+        ), $calls);
+    }
+
+    public function testSetProgressWithNullDisablesReporting()
+    {
+        $localFile = $this->tmpDir . '/upload.txt';
+        file_put_contents($localFile, 'hello world');
+
+        $this->transport->queueResponse(SftpPacket::TYPE_HANDLE, 1, SftpPacket::packString('h1'));
+        $this->transport->queueStatus(2, SftpPacket::STATUS_OK);
+        $this->transport->queueStatus(3, SftpPacket::STATUS_OK);
+
+        $calls = array();
+        $this->sftp->setProgress(function ($transferred, $total, $path) use (&$calls) {
+            $calls[] = array($transferred, $total, $path);
+        });
+        $this->sftp->setProgress(null);
+
+        $this->sftp->put('/remote/path/upload.txt', $localFile);
+
+        $this->assertSame(array(), $calls);
+    }
+
     /**
      * @param string $needle
      * @param string $haystack

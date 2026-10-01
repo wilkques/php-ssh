@@ -60,23 +60,46 @@ class Sftp extends AbstractSshProcess
         $chunkSize = self::CHUNK_SIZE;
         $totalChunks = $size > 0 ? (int) ceil($size / $chunkSize) : 0;
 
+        $progress = $this->progress;
+
+        if ($progress) {
+            $progress->reset();
+        }
+
+        $transferred = 0;
+        $chunkLengths = array();
+
         $caught = null;
 
         try {
             $channel->pipeline(
                 $totalChunks,
-                function ($index) use ($fp, $chunkSize, $handle) {
+                function ($index) use ($fp, $chunkSize, $handle, &$chunkLengths) {
                     $offset = $index * $chunkSize;
                     $data = fread($fp, $chunkSize);
+                    $data = $data === false ? '' : $data;
+
+                    $chunkLengths[$index] = strlen($data);
 
                     $payload = SftpPacket::packString($handle)
                         . SftpPacket::uint64ToBytes($offset)
-                        . SftpPacket::packString($data === false ? '' : $data);
+                        . SftpPacket::packString($data);
 
                     return array(SftpPacket::TYPE_WRITE, $payload);
                 },
-                function ($index, $type, $payload) use ($channel, $context) {
+                function ($index, $type, $payload) use ($channel, $context, $progress, &$transferred, &$chunkLengths, $size, $remotePath) {
                     $channel->assertStatusOk($type, $payload, $context);
+
+                    if ($progress) {
+                        // Progress only advances once the peer has actually
+                        // acked a WRITE, not when bytes are merely handed to
+                        // the pipe — unlike phpseclib, whose put() progress
+                        // fires before any ack is read at all.
+                        $transferred += $chunkLengths[$index];
+                        unset($chunkLengths[$index]);
+
+                        $progress->report($transferred, $size, $remotePath);
+                    }
                 }
             );
         } catch (\Exception $e) {
@@ -141,6 +164,14 @@ class Sftp extends AbstractSshProcess
         $chunkSize = self::CHUNK_SIZE;
         $totalChunks = $size > 0 ? (int) ceil($size / $chunkSize) : 0;
 
+        $progress = $this->progress;
+
+        if ($progress) {
+            $progress->reset();
+        }
+
+        $transferred = 0;
+
         $caught = null;
 
         try {
@@ -155,9 +186,17 @@ class Sftp extends AbstractSshProcess
 
                     return array(SftpPacket::TYPE_READ, $payload);
                 },
-                function ($index, $type, $payload) use ($fp, $channel, $context) {
+                function ($index, $type, $payload) use ($fp, $channel, $context, $progress, &$transferred, $size, $remotePath) {
                     if ($type === SftpPacket::TYPE_DATA) {
-                        fwrite($fp, SftpPacket::decodeData($payload));
+                        $data = SftpPacket::decodeData($payload);
+
+                        fwrite($fp, $data);
+
+                        if ($progress) {
+                            $transferred += strlen($data);
+
+                            $progress->report($transferred, $size, $remotePath);
+                        }
 
                         return;
                     }

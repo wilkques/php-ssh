@@ -29,6 +29,9 @@
         <testsuite name="SftpChannel">
             <file>./tests/SftpChannelTest.php</file>
         </testsuite>
+        <testsuite name="ProgressReporter">
+            <file>./tests/ProgressReporterTest.php</file>
+        </testsuite>
         <testsuite name="Integration">
             <directory suffix="Test.php">./tests/Integration</directory>
         </testsuite>

@@ -65,6 +65,11 @@ abstract class AbstractSshProcess
     protected $channel;
 
     /**
+     * @var ProgressReporter|null
+     */
+    protected $progress;
+
+    /**
      * @param string $ip
      *
      * @return static
@@ -428,6 +433,34 @@ abstract class AbstractSshProcess
             $this->channel->disconnect();
             $this->channel = null;
         }
+
+        return $this;
+    }
+
+    /**
+     * Set (or, with null, clear) a progress callback for put()/get(). The
+     * callback signature is `function($transferred, $total, $path)`, called
+     * with the number of bytes transferred and the total so far (byte
+     * counts a caller already confirmed the peer has processed — a write's
+     * progress only advances once its SSH_FXP_STATUS ack comes back, not
+     * when the bytes are merely handed to the pipe).
+     *
+     * $total may be 0 if a download's remote file genuinely is empty.
+     *
+     * Reporting is throttled by default — see ProgressReporter — so a slow
+     * callback (writing to a database, flushing to a browser, ...) can't
+     * dominate a transfer's wall-clock time just because the transfer
+     * happens to use a small chunk size.
+     *
+     * @param callable|null $callback
+     * @param array $options 'interval' => seconds between reports at minimum (default 0.2),
+     *                       'minDelta' => fraction of $total between reports at minimum (default 0.01)
+     *
+     * @return static
+     */
+    public function setProgress($callback, array $options = array())
+    {
+        $this->progress = $callback === null ? null : new ProgressReporter($callback, $options);
 
         return $this;
     }

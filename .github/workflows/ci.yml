@@ -29,7 +29,7 @@ jobs:
         run: composer install --no-interaction --prefer-dist
 
       - name: Run unit test suites
-        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp,Scp,SftpPacket,ProcessTransport,SftpChannel
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp,Scp,SftpPacket,ProcessTransport,SftpChannel,ProgressReporter
 
       - name: Run Tunnel/Sftp-pipe integration tests (no real sshd needed)
         if: ${{ matrix.php == '8.3' }}
@@ -63,7 +63,7 @@ jobs:
         run: composer install --no-interaction --prefer-dist
 
       - name: Run unit test suites
-        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp,Scp,SftpPacket,ProcessTransport,SftpChannel
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp,Scp,SftpPacket,ProcessTransport,SftpChannel,ProgressReporter
 
       - name: Run Tunnel/Sftp-pipe integration tests (real proc kill + real pipes on real Windows)
         run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration --filter 'TunnelIntegrationTest|SftpPipeIntegrationTest'
