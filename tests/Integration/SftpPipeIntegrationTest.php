@@ -3,7 +3,9 @@
 namespace Wilkques\Ssh\Tests\Integration;
 
 use PHPUnit\Framework\Attributes\Group;
+use Wilkques\Ssh\Exceptions\ScpException;
 use Wilkques\Ssh\Exceptions\SftpException;
+use Wilkques\Ssh\Scp;
 use Wilkques\Ssh\Sftp;
 use Wilkques\Ssh\Support\ProcessRunner;
 use Wilkques\Ssh\Support\ProcessTransport;
@@ -284,5 +286,39 @@ class SftpPipeIntegrationTest extends TestCase
         $this->assertEquals(5, $stat['size']);
 
         $this->assertSame('/a/b/file.txt', $sftp->realpath('/a/b/c/../file.txt'));
+    }
+
+    /**
+     * Scp shares the exact same channel as Sftp ("one engine, two
+     * facades") — this proves its directory-target append-basename
+     * behavior and non-recursive-against-a-directory guard over a real
+     * process, not just FakeTransport.
+     */
+    public function testScpDirectoryTargetAndRecursiveGuardOverRealPipes()
+    {
+        $scp = new Scp();
+        $scp->setChannel($this->channel);
+
+        mkdir($this->serverRoot . '/existing-dir');
+
+        $localFile = $this->tmpDir . '/upload.txt';
+        file_put_contents($localFile, 'hello');
+
+        // scp put into an existing remote directory copies INTO it.
+        $scp->put('/existing-dir', $localFile);
+        $this->assertSame('hello', file_get_contents($this->serverRoot . '/existing-dir/upload.txt'));
+
+        // Non-recursive get() against a remote directory must fail clearly.
+        try {
+            $scp->get('/existing-dir', $this->tmpDir . '/should-not-exist.txt');
+            $this->fail('expected a ScpException');
+        } catch (ScpException $e) {
+            // expected
+        }
+
+        // Recursive get() of that same directory must succeed.
+        $downloadDir = $this->tmpDir . '/downloaded-existing-dir';
+        $scp->get('/existing-dir', $downloadDir, true);
+        $this->assertSame('hello', file_get_contents($downloadDir . '/upload.txt'));
     }
 }

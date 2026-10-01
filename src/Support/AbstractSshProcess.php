@@ -2,9 +2,11 @@
 
 namespace Wilkques\Ssh\Support;
 
+use Wilkques\Ssh\Exceptions\SshException;
+
 /**
- * Shared credential/connection-option handling for Tunnel, Exec, and Sftp.
- * Not a trait: this package's PHP floor is 5.3, which has no traits.
+ * Shared credential/connection-option handling for Tunnel, Exec, Sftp, and
+ * Scp. Not a trait: this package's PHP floor is 5.3, which has no traits.
  */
 abstract class AbstractSshProcess
 {
@@ -717,5 +719,454 @@ abstract class AbstractSshProcess
         $channel->connect();
 
         return $channel;
+    }
+
+    /**
+     * Bytes per WRITE/READ request for putFile()/getFile(). A future
+     * enhancement could size this from the `limits@openssh.com` extension's
+     * advertised max write/read length instead of this fixed fallback;
+     * this is the same default v3 itself effectively assumes before any
+     * such negotiation.
+     */
+    const CHUNK_SIZE = 32768;
+
+    /**
+     * S_IFMT: the file-type bits within a POSIX mode. SFTPv3's ATTRS
+     * `permissions` field is the full st_mode (type bits included), unlike
+     * later SFTP protocol versions, which split file type into its own
+     * field.
+     */
+    const S_IFMT = 0170000;
+    const S_IFDIR = 0040000;
+
+    /**
+     * Single-file upload, shared by Sftp::put() and Scp::put() — "one
+     * engine, two facades" extends to the transfer mechanics, not just the
+     * protocol channel itself, since both need the identical open/pipeline/
+     * close sequence and differ only in how the caller's path arguments get
+     * resolved before reaching here.
+     *
+     * @param string $remotePath
+     * @param string $localPath
+     * @param bool $resume
+     *
+     * @return void
+     */
+    protected function putFile($remotePath, $localPath, $resume)
+    {
+        $fp = @fopen($localPath, 'rb');
+
+        if ($fp === false) {
+            throw $this->credentialException(sprintf('Unable to open local file for reading: %s', $localPath));
+        }
+
+        $channel = $this->channel();
+        $context = sprintf("put('%s')", $remotePath);
+
+        // Resuming means NOT truncating an existing remote file — opening
+        // without FXF_TRUNC leaves whatever's already there in place so a
+        // subsequent WRITE at the resume offset only appends past it.
+        $pflags = SftpPacket::FXF_WRITE | SftpPacket::FXF_CREAT;
+
+        if (!$resume) {
+            $pflags |= SftpPacket::FXF_TRUNC;
+        }
+
+        $openPayload = SftpPacket::packString($remotePath) . SftpPacket::uint32ToBytes($pflags) . SftpPacket::encodeAttrs(array());
+
+        $handle = $channel->expectHandle(SftpPacket::TYPE_OPEN, $openPayload, $context);
+
+        $startOffset = 0;
+
+        if ($resume) {
+            $attrs = $channel->expectAttrs(SftpPacket::TYPE_FSTAT, SftpPacket::packString($handle), $context);
+            $startOffset = isset($attrs['size']) ? $attrs['size'] : 0;
+
+            fseek($fp, $startOffset);
+        }
+
+        $size = filesize($localPath);
+        $remaining = $size > $startOffset ? $size - $startOffset : 0;
+        $chunkSize = self::CHUNK_SIZE;
+        $totalChunks = $remaining > 0 ? (int) ceil($remaining / $chunkSize) : 0;
+
+        $progress = $this->progress;
+
+        if ($progress) {
+            $progress->reset();
+        }
+
+        // Starts at $startOffset (not 0) so a resumed transfer's progress
+        // reflects what the server already has, rather than restarting a
+        // caller's progress bar from zero.
+        $transferred = $startOffset;
+        $chunkLengths = array();
+
+        $caught = null;
+
+        try {
+            $channel->pipeline(
+                $totalChunks,
+                function ($index) use ($fp, $chunkSize, $handle, $startOffset, &$chunkLengths) {
+                    $offset = $startOffset + $index * $chunkSize;
+                    $data = fread($fp, $chunkSize);
+                    $data = $data === false ? '' : $data;
+
+                    $chunkLengths[$index] = strlen($data);
+
+                    $payload = SftpPacket::packString($handle)
+                        . SftpPacket::uint64ToBytes($offset)
+                        . SftpPacket::packString($data);
+
+                    return array(SftpPacket::TYPE_WRITE, $payload);
+                },
+                function ($index, $type, $payload) use ($channel, $context, $progress, &$transferred, &$chunkLengths, $size, $remotePath) {
+                    $channel->assertStatusOk($type, $payload, $context);
+
+                    if ($progress) {
+                        // Progress only advances once the peer has actually
+                        // acked a WRITE, not when bytes are merely handed to
+                        // the pipe — unlike phpseclib, whose put() progress
+                        // fires before any ack is read at all.
+                        $transferred += $chunkLengths[$index];
+                        unset($chunkLengths[$index]);
+
+                        $progress->report($transferred, $size, $remotePath);
+                    }
+                }
+            );
+        } catch (\Exception $e) {
+            $caught = $e;
+        }
+
+        fclose($fp);
+
+        // Best-effort: close the remote handle even after a failed transfer
+        // so a half-written file's handle doesn't linger server-side.
+        // Swallow a second failure here — the original exception (if any)
+        // is what the caller actually needs to see.
+        try {
+            $channel->expectStatusOk(SftpPacket::TYPE_CLOSE, SftpPacket::packString($handle), $context);
+        } catch (\Exception $e) {
+            if (!$caught) {
+                $caught = $e;
+            }
+        }
+
+        if ($caught) {
+            throw $caught;
+        }
+    }
+
+    /**
+     * Recursive local-directory-to-remote-directory upload, shared by
+     * Sftp::put() and Scp::put().
+     *
+     * @param string $remotePath
+     * @param string $localPath
+     *
+     * @return void
+     */
+    protected function putDirectoryTree($remotePath, $localPath)
+    {
+        if (!$this->remoteExists($remotePath)) {
+            $this->channel()->expectStatusOk(
+                SftpPacket::TYPE_MKDIR,
+                SftpPacket::packString($remotePath) . SftpPacket::encodeAttrs(array()),
+                sprintf("mkdir('%s')", $remotePath)
+            );
+        }
+
+        $entries = scandir($localPath);
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $localChild = rtrim($localPath, '/\\') . DIRECTORY_SEPARATOR . $entry;
+            $remoteChild = rtrim($remotePath, '/') . '/' . $entry;
+
+            if (is_dir($localChild)) {
+                $this->putDirectoryTree($remoteChild, $localChild);
+            } else {
+                $this->putFile($remoteChild, $localChild, false);
+            }
+        }
+    }
+
+    /**
+     * Single-file download, shared by Sftp::get() and Scp::get().
+     *
+     * @param string $remotePath
+     * @param string $localPath
+     * @param bool $resume
+     *
+     * @return void
+     */
+    protected function getFile($remotePath, $localPath, $resume)
+    {
+        $channel = $this->channel();
+        $context = sprintf("get('%s')", $remotePath);
+
+        $openPayload = SftpPacket::packString($remotePath)
+            . SftpPacket::uint32ToBytes(SftpPacket::FXF_READ)
+            . SftpPacket::encodeAttrs(array());
+
+        $handle = $channel->expectHandle(SftpPacket::TYPE_OPEN, $openPayload, $context);
+
+        // FSTAT on the just-opened handle rather than STAT on the path, so
+        // there's no race between resolving the path and opening it.
+        $attrs = $channel->expectAttrs(SftpPacket::TYPE_FSTAT, SftpPacket::packString($handle), $context);
+        $size = isset($attrs['size']) ? $attrs['size'] : 0;
+
+        $startOffset = 0;
+        $localMode = 'wb';
+
+        if ($resume && is_file($localPath)) {
+            $localSize = filesize($localPath);
+
+            // A local file bigger than the remote one isn't a sane resume
+            // point (nothing to continue from) — fall back to a full
+            // re-download rather than silently producing a truncated file.
+            if ($localSize <= $size) {
+                $startOffset = $localSize;
+                $localMode = 'ab';
+            }
+        }
+
+        $fp = @fopen($localPath, $localMode);
+
+        if ($fp === false) {
+            try {
+                $channel->expectStatusOk(SftpPacket::TYPE_CLOSE, SftpPacket::packString($handle), $context);
+            } catch (\Exception $e) {
+                // the local-file error below is what the caller needs to see
+            }
+
+            throw $this->credentialException(sprintf('Unable to open local file for writing: %s', $localPath));
+        }
+
+        $remaining = $size > $startOffset ? $size - $startOffset : 0;
+        $chunkSize = self::CHUNK_SIZE;
+        $totalChunks = $remaining > 0 ? (int) ceil($remaining / $chunkSize) : 0;
+
+        $progress = $this->progress;
+
+        if ($progress) {
+            $progress->reset();
+        }
+
+        $transferred = $startOffset;
+
+        $caught = null;
+
+        try {
+            $channel->pipeline(
+                $totalChunks,
+                function ($index) use ($handle, $chunkSize, $startOffset) {
+                    $offset = $startOffset + $index * $chunkSize;
+
+                    $payload = SftpPacket::packString($handle)
+                        . SftpPacket::uint64ToBytes($offset)
+                        . SftpPacket::uint32ToBytes($chunkSize);
+
+                    return array(SftpPacket::TYPE_READ, $payload);
+                },
+                function ($index, $type, $payload) use ($fp, $channel, $context, $progress, &$transferred, $size, $remotePath) {
+                    if ($type === SftpPacket::TYPE_DATA) {
+                        $data = SftpPacket::decodeData($payload);
+
+                        fwrite($fp, $data);
+
+                        if ($progress) {
+                            $transferred += strlen($data);
+
+                            $progress->report($transferred, $size, $remotePath);
+                        }
+
+                        return;
+                    }
+
+                    if ($type === SftpPacket::TYPE_STATUS) {
+                        $status = SftpPacket::decodeStatus($payload);
+
+                        // Every READ here targets an offset within the size
+                        // FSTAT just reported, so this shouldn't happen —
+                        // but a file truncated concurrently on the server
+                        // could still produce it; treat it the same way
+                        // nlist()'s READDIR loop treats EOF, not as an error.
+                        if ($status['code'] === SftpPacket::STATUS_EOF) {
+                            return;
+                        }
+                    }
+
+                    $channel->assertStatusOk($type, $payload, $context);
+                }
+            );
+        } catch (\Exception $e) {
+            $caught = $e;
+        }
+
+        fclose($fp);
+
+        try {
+            $channel->expectStatusOk(SftpPacket::TYPE_CLOSE, SftpPacket::packString($handle), $context);
+        } catch (\Exception $e) {
+            if (!$caught) {
+                $caught = $e;
+            }
+        }
+
+        if ($caught) {
+            throw $caught;
+        }
+    }
+
+    /**
+     * Recursive remote-directory-to-local-directory download, shared by
+     * Sftp::get() and Scp::get().
+     *
+     * @param string $remotePath
+     * @param string $localPath
+     *
+     * @return void
+     */
+    protected function getDirectoryTree($remotePath, $localPath)
+    {
+        if (!is_dir($localPath) && !@mkdir($localPath, 0777, true) && !is_dir($localPath)) {
+            throw $this->credentialException(sprintf('Unable to create local directory: %s', $localPath));
+        }
+
+        $names = $this->listDirectory($remotePath);
+
+        foreach ($names as $name) {
+            $remoteChild = rtrim($remotePath, '/') . '/' . $name;
+            $localChild = rtrim($localPath, '/\\') . DIRECTORY_SEPARATOR . $name;
+
+            $attrs = $this->fetchAttrs($remoteChild);
+
+            if ($this->isDirectoryMode(isset($attrs['permissions']) ? $attrs['permissions'] : 0)) {
+                $this->getDirectoryTree($remoteChild, $localChild);
+            } else {
+                $this->getFile($remoteChild, $localChild, false);
+            }
+        }
+    }
+
+    /**
+     * @param int $permissions the ATTRS 'permissions' field (full st_mode, not just rwx bits)
+     *
+     * @return bool
+     */
+    protected function isDirectoryMode($permissions)
+    {
+        return ($permissions & self::S_IFMT) === self::S_IFDIR;
+    }
+
+    /**
+     * SSH_FXP_STAT — follows symlinks. The primitive behind Sftp::stat();
+     * also used internally by getDirectoryTree() to tell files from
+     * directories while walking a remote tree.
+     *
+     * @param string $remotePath
+     *
+     * @return array decoded ATTRS
+     */
+    protected function fetchAttrs($remotePath)
+    {
+        return $this->channel()->expectAttrs(
+            SftpPacket::TYPE_STAT,
+            SftpPacket::packString($remotePath),
+            sprintf("stat('%s')", $remotePath)
+        );
+    }
+
+    /**
+     * SSH_FXP_OPENDIR/READDIR/CLOSE loop — the primitive behind
+     * Sftp::nlist(); also used internally by getDirectoryTree().
+     *
+     * @param string $remotePath
+     *
+     * @return string[] filenames, '.'/'..' filtered
+     */
+    protected function listDirectory($remotePath)
+    {
+        $channel = $this->channel();
+        $context = sprintf("nlist('%s')", $remotePath);
+
+        $handle = $channel->expectHandle(SftpPacket::TYPE_OPENDIR, SftpPacket::packString($remotePath), $context);
+
+        $names = array();
+        $caught = null;
+
+        try {
+            while (true) {
+                $entries = $channel->expectNameList(SftpPacket::TYPE_READDIR, SftpPacket::packString($handle), $context);
+
+                if ($entries === null) {
+                    break;
+                }
+
+                foreach ($entries as $entry) {
+                    // '.'/'..' are filtered (matching what a caller actually
+                    // wants from "list this directory's contents"); unlike
+                    // the old `sftp -b` + `ls -1` path this replaces,
+                    // dotfiles are NOT otherwise hidden — SSH_FXP_READDIR
+                    // doesn't hide them, and there's no good reason to.
+                    if ($entry['filename'] === '.' || $entry['filename'] === '..') {
+                        continue;
+                    }
+
+                    $names[] = $entry['filename'];
+                }
+            }
+        } catch (\Exception $e) {
+            $caught = $e;
+        }
+
+        try {
+            $channel->expectStatusOk(SftpPacket::TYPE_CLOSE, SftpPacket::packString($handle), $context);
+        } catch (\Exception $e) {
+            if (!$caught) {
+                $caught = $e;
+            }
+        }
+
+        if ($caught) {
+            throw $caught;
+        }
+
+        return $names;
+    }
+
+    /**
+     * SSH_FXP_LSTAT (not STAT — reports the path entry itself without
+     * following a symlink, so a broken symlink still counts as "exists").
+     * The primitive behind Sftp::exists(); also used internally by
+     * putDirectoryTree() to decide whether a remote directory needs
+     * creating.
+     *
+     * @param string $remotePath
+     *
+     * @return bool
+     */
+    protected function remoteExists($remotePath)
+    {
+        try {
+            $this->channel()->expectAttrs(
+                SftpPacket::TYPE_LSTAT,
+                SftpPacket::packString($remotePath),
+                sprintf("exists('%s')", $remotePath)
+            );
+        } catch (SshException $e) {
+            if ($e->getCode() === SftpPacket::STATUS_NO_SUCH_FILE) {
+                return false;
+            }
+
+            throw $e;
+        }
+
+        return true;
     }
 }
