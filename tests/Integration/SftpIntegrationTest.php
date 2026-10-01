@@ -2,18 +2,26 @@
 
 namespace Wilkques\Ssh\Tests\Integration;
 
+use PHPUnit\Framework\Attributes\Group;
 use Wilkques\Ssh\Sftp;
 use Wilkques\Ssh\Tests\TestCase;
 
 /**
- * Runs the real `sftp` CLI in batch mode against a real sshd. Only
- * meaningful with a reachable test sshd (see the dedicated `integration-ssh`
- * CI job, which stands one up on localhost with a throwaway keypair) —
- * skipped otherwise. Also the one place that genuinely exercises nlist()'s
- * batch-output parsing against a real `sftp` binary, not a mocked one.
+ * Runs a real SFTPv3 protocol channel (`ssh -s host sftp`, PHP speaking the
+ * wire protocol directly — see Wilkques\Ssh\Support\SftpChannel) against a
+ * real sshd. Only meaningful with a reachable test sshd (see the dedicated
+ * `integration-ssh` CI job, which stands one up on localhost with a
+ * throwaway keypair) — skipped otherwise. Unit tests cover the protocol
+ * logic itself against a FakeTransport; this is what proves the real thing
+ * — handshake, request/response framing, pipelining — actually works
+ * end to end against genuine OpenSSH.
  *
  * @group integration
+ *
+ * (also tagged with the #[Group] attribute below — see
+ * ExecIntegrationTest's docblock for why both forms are needed)
  */
+#[Group('integration')]
 class SftpIntegrationTest extends TestCase
 {
     /** @var Sftp */

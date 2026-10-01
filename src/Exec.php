@@ -38,11 +38,12 @@ class Exec extends AbstractSshProcess
 
     /**
      * @param string $message
+     * @param int $code
      *
      * @return \Wilkques\Ssh\Exceptions\ExecException
      */
-    protected function credentialException($message)
+    public function credentialException($message, $code = 0)
     {
-        return new ExecException($message);
+        return new ExecException($message, $code);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Wilkques\Ssh\Tests\Integration;
 
+use PHPUnit\Framework\Attributes\Group;
 use Wilkques\Ssh\Exec;
 use Wilkques\Ssh\Tests\TestCase;
 
@@ -11,7 +12,16 @@ use Wilkques\Ssh\Tests\TestCase;
  * stands one up on localhost with a throwaway keypair) — skipped otherwise.
  *
  * @group integration
+ *
+ * The #[Group] attribute below duplicates the @group docblock tag above:
+ * PHPUnit 10+ stopped reading docblock @group tags for --group filtering
+ * (verified directly — `--list-groups` shows only "default" without this),
+ * but this package's PHP 5.3 floor runs under PHPUnit 4.8.x, which only
+ * understands the docblock form and has no idea what a PHP 8 attribute is.
+ * `#[...]` is backward-compatible as a harmless `#`-comment on PHP < 8, so
+ * both can coexist — confirmed directly on real PHP 5.6/7.4/8.3 builds.
  */
+#[Group('integration')]
 class ExecIntegrationTest extends TestCase
 {
     /** @var Exec */

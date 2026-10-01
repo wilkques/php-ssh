@@ -78,11 +78,12 @@ class Scp extends AbstractSshProcess
 
     /**
      * @param string $message
+     * @param int $code
      *
      * @return \Wilkques\Ssh\Exceptions\ScpException
      */
-    protected function credentialException($message)
+    public function credentialException($message, $code = 0)
     {
-        return new ScpException($message);
+        return new ScpException($message, $code);
     }
 }

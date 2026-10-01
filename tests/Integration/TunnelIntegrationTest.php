@@ -2,6 +2,7 @@
 
 namespace Wilkques\Ssh\Tests\Integration;
 
+use PHPUnit\Framework\Attributes\Group;
 use Wilkques\Ssh\Support\ProcessRunner;
 use Wilkques\Ssh\Tests\TestCase;
 
@@ -16,7 +17,11 @@ use Wilkques\Ssh\Tests\TestCase;
  * re-verify).
  *
  * @group integration
+ *
+ * (also tagged with the #[Group] attribute below — see
+ * ExecIntegrationTest's docblock for why both forms are needed)
  */
+#[Group('integration')]
 class TunnelIntegrationTest extends TestCase
 {
     protected function additionalSetUp()

@@ -57,6 +57,14 @@ abstract class AbstractSshProcess
     protected $previousAskPassEnv = array();
 
     /**
+     * Shared by Sftp and Scp (both one engine, two facades over the same
+     * SftpChannel — see openSftpChannel()); Exec and Tunnel never touch it.
+     *
+     * @var SftpChannel|null
+     */
+    protected $channel;
+
+    /**
      * @param string $ip
      *
      * @return static
@@ -377,6 +385,54 @@ abstract class AbstractSshProcess
     }
 
     /**
+     * Inject an already-connected channel, bypassing openSftpChannel()
+     * entirely — the seam Sftp/Scp's unit tests use to drive a real
+     * SftpChannel against a FakeTransport instead of a real ssh process.
+     *
+     * @param SftpChannel $channel
+     *
+     * @return static
+     */
+    public function setChannel(SftpChannel $channel)
+    {
+        $this->channel = $channel;
+
+        return $this;
+    }
+
+    /**
+     * Lazily open (and cache) the SFTP channel used by Sftp/Scp's
+     * operations.
+     *
+     * @return SftpChannel
+     */
+    protected function channel()
+    {
+        if (!$this->channel) {
+            $this->channel = $this->openSftpChannel();
+        }
+
+        return $this->channel;
+    }
+
+    /**
+     * Close the underlying channel (the ssh subprocess it holds open), if
+     * one was ever opened. Safe to call when there isn't one. The next
+     * put()/get()/etc. call reconnects lazily.
+     *
+     * @return static
+     */
+    public function disconnect()
+    {
+        if ($this->channel) {
+            $this->channel->disconnect();
+            $this->channel = null;
+        }
+
+        return $this;
+    }
+
+    /**
      * @return bool
      */
     protected function isWindows()
@@ -555,9 +611,78 @@ abstract class AbstractSshProcess
     }
 
     /**
+     * Builds this component's own exception type from a message (and,
+     * since SSH_FX_* status codes need somewhere to live, an optional
+     * code). Originally just a credential-setup-error factory (see
+     * setIdRsaPath()), this is now also handed to SftpChannel as
+     * `array($this, 'credentialException')` so one protocol engine can
+     * throw SftpException for Sftp and ScpException for Scp — which is
+     * also why it has to be public rather than protected: call_user_func()
+     * checks visibility against the scope it's called *from*
+     * (SftpChannel::raise(), unrelated to this class hierarchy), not
+     * wherever the callable array happened to be built, so a protected
+     * target can never be invoked that way on any PHP version.
+     *
      * @param string $message
+     * @param int $code
      *
      * @return \Wilkques\Ssh\Exceptions\SshException
      */
-    abstract protected function credentialException($message);
+    abstract public function credentialException($message, $code = 0);
+
+    /**
+     * Launch a persistent `ssh -s host sftp` subsystem process and complete
+     * the SFTP handshake over it, for Sftp/Scp — both of which need the
+     * exact same launch sequence (shared ssh options, ASKPASS lifecycle,
+     * the channel's platform-dependent in-flight cap) and differ only in
+     * which exception type the resulting channel should throw, which
+     * credentialException() already resolves polymorphically.
+     *
+     * @return \Wilkques\Ssh\Support\SftpChannel
+     */
+    protected function openSftpChannel()
+    {
+        $args = $this->sshOptions('-p');
+
+        // Mirrors the four options `sftp` sets for its own ssh invocation
+        // (sftp.c), so a channel opened this way behaves the same as the
+        // real sftp binary would over the same connection.
+        $args[] = '-o';
+        $args[] = 'ForwardX11=no';
+        $args[] = '-o';
+        $args[] = 'PermitLocalCommand=no';
+        $args[] = '-o';
+        $args[] = 'ClearAllForwardings=yes';
+
+        $args[] = '-s';
+        $args[] = $this->getUser() . '@' . $this->getSshIp();
+        $args[] = 'sftp';
+
+        $cmd = $this->buildCommandLine('ssh', $args);
+
+        $stderrFile = tempnam(sys_get_temp_dir(), 'wilkques-ssh-sftp-stderr');
+
+        $script = $this->beginAskPass();
+
+        $pipes = null;
+        $process = $this->getProcessRunner()->openChannel($cmd, $stderrFile, $pipes);
+
+        $this->endAskPass($script);
+
+        if (!is_resource($process)) {
+            @unlink($stderrFile);
+
+            throw $this->credentialException('Failed to start the SFTP channel: unable to launch the ssh process.');
+        }
+
+        $transport = new ProcessTransport($this->getProcessRunner(), $process, $pipes, $stderrFile, $this->isWindows());
+
+        $maxInFlight = $this->isWindows() ? SftpChannel::MAX_IN_FLIGHT_WINDOWS : SftpChannel::MAX_IN_FLIGHT_DEFAULT;
+
+        $channel = new SftpChannel($transport, array($this, 'credentialException'), $maxInFlight);
+
+        $channel->connect();
+
+        return $channel;
+    }
 }

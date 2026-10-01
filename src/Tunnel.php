@@ -111,12 +111,13 @@ class Tunnel extends AbstractSshProcess
 
     /**
      * @param string $message
+     * @param int $code
      *
      * @return \Wilkques\Ssh\Exceptions\TunnelException
      */
-    protected function credentialException($message)
+    public function credentialException($message, $code = 0)
     {
-        return new TunnelException($message);
+        return new TunnelException($message, $code);
     }
 
     public function __destruct()

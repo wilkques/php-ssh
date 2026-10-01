@@ -392,13 +392,19 @@ class SftpChannel
     }
 
     /**
+     * Public (unlike the other expect*() helpers, which go through
+     * request() and so are only safe for single-in-flight calls) because
+     * put()/get()'s pipelined transfer loops need to run every raw WRITE/
+     * READ response they receive through this exact same STATUS-vs-
+     * unexpected-type mapping, without going through request() themselves.
+     *
      * @param int $responseType
      * @param string $responsePayload
      * @param string $context
      *
      * @return void
      */
-    protected function assertStatusOk($responseType, $responsePayload, $context)
+    public function assertStatusOk($responseType, $responsePayload, $context)
     {
         $this->raiseIfStatusError($responseType, $responsePayload, $context);
 
