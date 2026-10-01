@@ -48,9 +48,19 @@ class SftpPipeIntegrationTest extends TestCase
         $this->serverRoot = $this->tmpDir . '/server-root';
         mkdir($this->serverRoot, 0777, true);
 
-        // PHP_BINARY is 5.4+; this package's floor is 5.3 (TunnelIntegrationTest
-        // guards the same way).
-        $php = defined('PHP_BINARY') ? PHP_BINARY : PHP_BINDIR . DIRECTORY_SEPARATOR . 'php';
+        // PHP_BINARY only exists since PHP 5.4; this package supports PHP
+        // 5.3, where referencing it would silently evaluate to the literal
+        // string "PHP_BINARY" instead of a real path — same fallback as
+        // TunnelIntegrationTest, and for the same reason it has to be the
+        // bare command name 'php' rather than a manually-built
+        // PHP_BINDIR . DIRECTORY_SEPARATOR . 'php' path: Windows'
+        // CreateProcess (invoked here via bypass_shell => true) only
+        // appends the .exe extension itself when resolving a bare name via
+        // its own PATH search — an explicit path without the extension
+        // (what the manual version produces on Windows) fails outright
+        // with "CreateProcess failed, error code - 2", confirmed on real
+        // Windows CI running PHP 5.3 (PHP_BINARY undefined there).
+        $php = defined('PHP_BINARY') ? PHP_BINARY : 'php';
         $script = __DIR__ . '/../fixtures/fake-sftp-server.php';
 
         $cmd = escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($this->serverRoot);
