@@ -33,7 +33,19 @@ jobs:
 
       - name: Run Tunnel/Sftp-pipe integration tests (no real sshd needed)
         if: ${{ matrix.php == '8.3' }}
-        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration --filter "TunnelIntegrationTest|SftpPipeIntegrationTest"
+        # No --filter regex on purpose: PowerShell on windows-latest hands
+        # vendor/bin/phpunit's .bat wrapper off to cmd.exe internally, and
+        # that hop has a long-standing PowerShell bug where special
+        # characters (like a regex `|`) in an already-quoted argument get
+        # re-serialized unescaped for the batch file — no quoting style in
+        # this YAML survives that (verified: switching '...' to "..." alone
+        # did not fix it on real CI). Every other Integration test class
+        # already self-skips via markTestSkipped() unless its own env var is
+        # set (see each class's additionalSetUp()), and SftpPipeIntegrationTest
+        # has no gate at all, so just setting SSH_TUNNEL_INTEGRATION below and
+        # leaving SSH_EXEC_INTEGRATION/SSH_SFTP_INTEGRATION unset selects the
+        # exact same two classes without needing any filter argument at all.
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration
         env:
           SSH_TUNNEL_INTEGRATION: '1'
 
@@ -70,7 +82,19 @@ jobs:
         run: vendor/bin/phpunit -c phpunit.xml --testsuite Tunnel,Exec,Sftp,Scp,SftpPacket,ProcessTransport,SftpChannel,ProgressReporter
 
       - name: Run Tunnel/Sftp-pipe integration tests (real proc kill + real pipes on real Windows)
-        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration --filter "TunnelIntegrationTest|SftpPipeIntegrationTest"
+        # No --filter regex on purpose: PowerShell on windows-latest hands
+        # vendor/bin/phpunit's .bat wrapper off to cmd.exe internally, and
+        # that hop has a long-standing PowerShell bug where special
+        # characters (like a regex `|`) in an already-quoted argument get
+        # re-serialized unescaped for the batch file — no quoting style in
+        # this YAML survives that (verified: switching '...' to "..." alone
+        # did not fix it on real CI). Every other Integration test class
+        # already self-skips via markTestSkipped() unless its own env var is
+        # set (see each class's additionalSetUp()), and SftpPipeIntegrationTest
+        # has no gate at all, so just setting SSH_TUNNEL_INTEGRATION below and
+        # leaving SSH_EXEC_INTEGRATION/SSH_SFTP_INTEGRATION unset selects the
+        # exact same two classes without needing any filter argument at all.
+        run: vendor/bin/phpunit -c phpunit.xml --testsuite Integration --group integration
         env:
           SSH_TUNNEL_INTEGRATION: '1'
 
