@@ -1,20 +1,22 @@
 # wilkques/ssh
 
+[English](README.md) | [繁體中文](README_ZH.md)
+
 PHP 用的 SSH local port-forward tunnel、遠端指令執行、SFTP/SCP 檔案傳輸套件。
 
 四個各自獨立、可單獨使用的元件：
 
 - **`Tunnel`** — `ssh -L` local port forward（例如：連只白名單跳板機來源的資料庫）。
 - **`Exec`** — 透過 `ssh` 在遠端主機執行單一指令。
-- **`Sftp`** — 用真正的 `sftp` CLI batch 模式做 `put`/`get`/`nlist`/`mkdir`/`rmdir`/`rename`/`chmod`/`delete`/`exists`。
-- **`Scp`** — 用真正的 `scp` binary 做 `put`/`get`（可選遞迴）。
+- **`Sftp`** — `put`/`get`/`nlist`/`mkdir`/`rmdir`/`rename`/`chmod`/`delete`/`exists`/`stat`/`realpath`，外加進度回呼、遞迴傳輸、續傳，底層是真正的 SFTPv3 協定管道。
+- **`Scp`** — `put`/`get`（可選遞迴），保留 `scp` 自己的「目標是目錄就複製進去」語意，預設跟 `Sftp` 共用同一條管道（或用 `setLegacy(true)` 退回真正的 `scp` binary）。
 
-**零 Composer 依賴。** 四個元件都是直接 shell 出去呼叫系統的 `ssh`/`sftp`/`scp`。
+**零 Composer 依賴。** `Tunnel`/`Exec` 直接 shell 出去呼叫系統的 `ssh`；`Sftp`/`Scp` 則是在 `ssh` 子行程的管道上直接講 SFTP 協定——沒有用任何協定函式庫，就是 PHP 自己講 wire format（只有 `Scp::setLegacy(true)` 模式才會退回真正的 `scp` binary）。
 
 ## 環境需求
 
 - PHP >= 5.3
-- `PATH` 裡要有 `ssh`（四個元件都需要；`Sftp` 另外需要 `sftp`，`Scp` 另外需要 `scp`）
+- `PATH` 裡要有 `ssh`（四個元件都需要；`Scp` 另外需要 `scp`，但只有 `setLegacy(true)` 模式才用得到）
 - `proc_open` 不能被禁用
 
 ## 安裝
@@ -80,11 +82,22 @@ $sftp->rename('/remote/old.log', '/remote/new.log');
 $sftp->chmod('/remote/path/backup.sql.gz', 0644);   // 可傳 8 進位整數字面值或字串 '644'
 $sftp->delete('/remote/path/old-backup.sql.gz');
 $exists = $sftp->exists('/remote/path/backup.sql.gz');   // bool
+
+$info = $sftp->stat('/remote/path/backup.sql.gz');       // 陣列：size/uid/gid/permissions/atime/mtime，視伺服器實際回報的欄位而定
+$resolved = $sftp->realpath('~/backup.sql.gz');          // 請伺服器解析 `~`、`..`、相對路徑等
+
+// put()/get() 多了一個可選的第 3 個 `$options` 陣列參數——純新增，上面的 2 參數寫法照樣能用
+$sftp->put('/remote/path/dir', '/local/path/dir', array('recursive' => true));
+$sftp->get('/remote/path/dir', '/local/path/dir', array('recursive' => true));
+$sftp->put('/remote/path/big.iso', '/local/path/big.iso', array('resume' => true)); // 從遠端檔案目前的大小接著傳
+$sftp->get('/remote/path/big.iso', '/local/path/big.iso', array('resume' => true)); // 從本機檔案目前的大小接著傳
 ```
 
-`put()`/`get()`/`chmod()` 都是遠端路徑在前。用的是真正的 `sftp` binary batch 模式（真的是 SFTP 子系統，不是 `scp`）。結束碼非 0 會丟 `Wilkques\Ssh\Exceptions\SftpException`（含 stderr）——`exists()` 例外，路徑不存在時回傳 `false`，不丟例外。
+`put()`/`get()`/`chmod()`/`stat()` 都是遠端路徑在前。底層是在一個持續存在的 `ssh -s host sftp` 子行程上直接講 SFTPv3 協定（原因見下方的[進度回呼](#進度回呼)）——只需要 `ssh`，不需要 `sftp`。失敗會丟 `Wilkques\Ssh\Exceptions\SftpException`，伺服器有回報 `SSH_FX_*` 狀態碼的話會帶在例外的 code 裡——`exists()` 例外，只有「不存在」時才回傳 `false`，其他錯誤（例如權限不足）一律還是會丟出去，不會被誤判成「不存在」。
 
-**已知限制：** `nlist()` 的輸出解析是針對標準 OpenSSH `sftp -q -b` 的 batch 輸出格式；少見的 `sftp` 版本輸出格式可能不同。
+`recursive`/`resume` 刻意做得很單純：非遞迴的 `put()`/`get()` 對上目錄會直接丟例外，不會默默做錯事；`resume` 就只是從某個位移量接著傳，不驗證內容是否相符——跟 `sftp` 自己的 `reput`/`reget` 做法一樣。
+
+底層的 `ssh` 子行程是第一次用到時才會惰性建立，而且同一個物件後續呼叫會一直沿用，不會每次都重連（不然持續管道就失去意義了）。用完呼叫 `$sftp->disconnect()` 主動關閉；`__destruct()` 也會保底呼叫一次，跟 `Tunnel::stop()` 一樣。
 
 ## `Scp`
 
@@ -100,11 +113,34 @@ $scp->setSshIp('10.10.2.58')
 $scp->put('/remote/path/backup.sql.gz', '/local/path/backup.sql.gz');
 $scp->get('/remote/path/access.log.gz', '/local/path/access.log.gz');
 
-$scp->put('/remote/path/dir', '/local/path/dir', true);   // 第三個參數：遞迴（-r）
+$scp->put('/remote/path/dir', '/local/path/dir', true);   // 第三個參數：遞迴
 $scp->get('/remote/path/dir', '/local/path/dir', true);
+
+// 目標已經是一個目錄的話，會複製「進去」，跟真正的 scp binary 行為一致：
+$scp->put('/remote/existing-dir', '/local/file.txt');     // 上傳到 /remote/existing-dir/file.txt
 ```
 
-跟 `Sftp` 一樣是 `put($remote, $local)` / `get($remote, $local)` 的參數順序，只是底層走的是真正的 `scp` binary，不是 `sftp`——適合目標主機只開 `scp`（舊協定）沒開 SFTP 子系統的情況。第三個參數傳 `true` 可以整個資料夾遞迴複製（`-r`）。結束碼非 0 會丟 `Wilkques\Ssh\Exceptions\ScpException`（含 stderr）。
+跟以前一樣是 `put($remote, $local, $recursive = false)` / `get($remote, $local, $recursive = false)` 的參數形狀。預設 `Scp` 跟 `Sftp` 共用同一條 SFTP 協定管道——一個引擎、兩個外觀，跟 OpenSSH 9.0 之後 `scp`、`sftp` 之間的關係一樣（`scp` 從那版開始預設底層也改講 SFTP）。只需要 `ssh`，不需要 `scp`，而且跟 `Sftp` 一樣有[進度回呼](#進度回呼)。
+
+想退回真正的 `scp` binary（加上 `-O` 強制走舊版 SCP/RCP 協定）就呼叫 `setLegacy(true)`——適合目標主機沒有 SFTP 子系統的情況。只有這個模式才需要 `PATH` 裡有 `scp`，而且這個模式沒有進度回呼：`setProgress()` 跟 `setLegacy(true)` 一起用會直接丟例外，不會默默沒反應。
+
+結束碼非 0 會丟 `Wilkques\Ssh\Exceptions\ScpException`。
+
+## 進度回呼
+
+```php
+$sftp->setProgress(function ($transferred, $total, $path) {
+    printf("\r%s: %d%%", $path, $total > 0 ? (int) ($transferred / $total * 100) : 100);
+});
+
+$sftp->put('/remote/path/big.iso', '/local/path/big.iso');
+
+$sftp->setProgress(null); // 取消回呼
+```
+
+`Scp` 也有一樣的方法（`setLegacy(true)` 模式除外，見上）。`$transferred`/`$total` 是對方**已經確認**的 bytes 數，不是只是丟進本機 pipe 的量——上傳的進度要等那個 WRITE 的回覆收到才會往前走（對照一下，phpseclib 的 SFTP `put()` 進度回呼是在讀任何回覆之前就先觸發，預設佇列深度下最多可以超前伺服器實際確認的進度達 32MB）。預設節流：最快每 200ms 或每 1% 進度才觸發一次，可以用第二個參數調整：`setProgress($callback, array('interval' => 0.1, 'minDelta' => 0.005))`。完成時的最後一次回報一定會觸發，不受節流限制。
+
+這也是這個套件把 `Sftp`/`Scp` 從 `sftp`/`scp` 這兩支 CLI 換成直接講 SFTP 協定的原因：這兩支二進位檔自己的進度條在非互動／batch 模式下本來就一定被關掉，就算是互動模式也只有 stdout 是真正的前景終端機才會畫——這件事 PHP 沒辦法保證，尤其是在 Windows 上。
 
 ## 連線選項
 
@@ -135,7 +171,7 @@ $exec->closeMultiplexedConnection();   // 用完主動關閉
 
 ## 非互動式密碼登入
 
-三個元件都可以呼叫 `setPassword($password)` 做免金鑰登入——做法是寫一個暫存的 `SSH_ASKPASS` 腳本，呼叫期間把相關環境變數指過去，結束後清掉，這是常見的 `ssh`/`scp` 自動化技巧。沒設密碼時，底層程序會直接沿用呼叫端的 stdin/stdout/stderr，讓真正的 binary 可以互動式提示輸入或直接用金鑰登入。
+四個元件都可以呼叫 `setPassword($password)` 做免金鑰登入——做法是寫一個暫存的 `SSH_ASKPASS` 腳本，呼叫期間把相關環境變數指過去，結束後清掉，這是常見的 `ssh`/`scp` 自動化技巧。沒設密碼時，底層程序會直接沿用呼叫端的 stdin/stdout/stderr，讓真正的 binary 可以互動式提示輸入或直接用金鑰登入。
 
 ## 例外處理
 
