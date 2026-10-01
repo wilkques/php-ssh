@@ -29,6 +29,33 @@ class ProcessRunner
     }
 
     /**
+     * Start a long-lived process with stdin/stdout as pipes and stderr
+     * redirected to a file, rather than a third pipe (used by SftpChannel's
+     * ProcessTransport for the persistent `ssh -s host sftp` subsystem
+     * process — see ProcessTransport's docblock for why stderr doesn't get
+     * its own pipe: holding and draining two pipes at once without
+     * deadlocking is already the hard part on Windows, and a third one
+     * would need stream_select() to drain safely, which pipes don't
+     * support reliably there).
+     *
+     * @param string $cmd
+     * @param string $stderrFile path stderr is redirected to
+     * @param array $pipes (by reference, populated by proc_open: [0] stdin, [1] stdout)
+     *
+     * @return resource|false
+     */
+    public function openChannel($cmd, $stderrFile, &$pipes)
+    {
+        $descriptorspec = array(
+            0 => array('pipe', 'r'),
+            1 => array('pipe', 'w'),
+            2 => array('file', $stderrFile, 'w'),
+        );
+
+        return proc_open($cmd, $descriptorspec, $pipes, null, null, array('bypass_shell' => true));
+    }
+
+    /**
      * Run a process to completion, capturing stdout/stderr and the exit code
      * (used by Exec/Sftp, which need to wait for a one-shot command).
      *

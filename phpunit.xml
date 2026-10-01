@@ -23,6 +23,12 @@
         <testsuite name="SftpPacket">
             <file>./tests/SftpPacketTest.php</file>
         </testsuite>
+        <testsuite name="ProcessTransport">
+            <file>./tests/ProcessTransportTest.php</file>
+        </testsuite>
+        <testsuite name="SftpChannel">
+            <file>./tests/SftpChannelTest.php</file>
+        </testsuite>
         <testsuite name="Integration">
             <directory suffix="Test.php">./tests/Integration</directory>
         </testsuite>
