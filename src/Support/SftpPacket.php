@@ -188,7 +188,15 @@ class SftpPacket
 
         $offset += 4;
 
-        $value = substr($bytes, $offset, $length);
+        // On PHP < 8.0, substr($str, $start, $length) returns false (not
+        // '') whenever $start >= strlen($str) — which a zero-length string
+        // positioned exactly at the end of the buffer hits every time (a
+        // common shape: an empty filename/message/language-tag as the last
+        // field). Short-circuiting the zero-length case sidesteps that
+        // entirely rather than depending on buffer-bounds arithmetic.
+        // Confirmed directly against real PHP 5.3.29: substr('abcd', 4, 0)
+        // is bool(false), not string(0) "".
+        $value = $length > 0 ? substr($bytes, $offset, $length) : '';
 
         $offset += $length;
 
@@ -237,7 +245,12 @@ class SftpPacket
      */
     public static function decodeHeader($frameBody)
     {
-        return array(ord($frameBody[0]), substr($frameBody, 1));
+        // Same PHP < 8.0 substr()-returns-false-at-end-of-string pitfall as
+        // unpackString() — a type byte with a genuinely empty payload would
+        // otherwise come back as `false` instead of `''`.
+        $payload = strlen($frameBody) > 1 ? substr($frameBody, 1) : '';
+
+        return array(ord($frameBody[0]), $payload);
     }
 
     /**
@@ -254,7 +267,10 @@ class SftpPacket
         list($type, $rest) = self::decodeHeader($frameBody);
 
         $id = self::bytesToUint32(substr($rest, 0, 4));
-        $payload = substr($rest, 4);
+        // Same PHP < 8.0 substr()-at-end-of-string pitfall again — a
+        // response with no payload beyond its id (none of this package's
+        // own usages produce one, but this is a general-purpose codec).
+        $payload = strlen($rest) > 4 ? substr($rest, 4) : '';
 
         return array($type, $id, $payload);
     }
