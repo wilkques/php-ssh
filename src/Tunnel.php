@@ -31,17 +31,9 @@ class Tunnel extends AbstractSshProcess
     {
         $this->localPort = $localPort;
 
-        $args = array(
-            '-N',
-            '-o', 'StrictHostKeyChecking=accept-new',
-            '-o', 'ExitOnForwardFailure=yes',
-            '-L', $localPort . ':' . $remoteHost . ':' . $remotePort,
-        );
+        $args = array('-N', '-o', 'ExitOnForwardFailure=yes', '-L', $localPort . ':' . $remoteHost . ':' . $remotePort);
 
-        if ($this->getIdRsaPath()) {
-            $args[] = '-i';
-            $args[] = $this->getIdRsaPath();
-        }
+        $args = array_merge($args, $this->sshOptions('-p'));
 
         $args[] = $this->getUser() . '@' . $this->getSshIp();
 

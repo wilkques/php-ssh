@@ -11,16 +11,22 @@ use Wilkques\Ssh\Support\AbstractSshProcess;
 class Scp extends AbstractSshProcess
 {
     /**
-     * 上傳本機檔案到遠端
+     * 上傳本機檔案（或目錄，$recursive = true 時）到遠端
      *
      * @param string $remotePath
      * @param string $localPath
+     * @param bool $recursive
      *
      * @return void
      */
-    public function put($remotePath, $localPath)
+    public function put($remotePath, $localPath, $recursive = false)
     {
-        $args = $this->sshOptions();
+        $args = $this->sshOptions('-P');
+
+        if ($recursive) {
+            $args[] = '-r';
+        }
+
         $args[] = $localPath;
         $args[] = $this->getUser() . '@' . $this->getSshIp() . ':' . $remotePath;
 
@@ -28,16 +34,22 @@ class Scp extends AbstractSshProcess
     }
 
     /**
-     * 從遠端下載檔案到本機
+     * 從遠端下載檔案（或目錄，$recursive = true 時）到本機
      *
      * @param string $remotePath
      * @param string $localPath
+     * @param bool $recursive
      *
      * @return void
      */
-    public function get($remotePath, $localPath)
+    public function get($remotePath, $localPath, $recursive = false)
     {
-        $args = $this->sshOptions();
+        $args = $this->sshOptions('-P');
+
+        if ($recursive) {
+            $args[] = '-r';
+        }
+
         $args[] = $this->getUser() . '@' . $this->getSshIp() . ':' . $remotePath;
         $args[] = $localPath;
 

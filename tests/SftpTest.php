@@ -100,6 +100,107 @@ class SftpTest extends TestCase
         $this->sftp->get('/remote/forbidden', '/local/forbidden');
     }
 
+    public function testDeleteBuildsARmBatchCommand()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->delete('/remote/path/file.log');
+
+        $this->assertStringContainsStringCompat('rm ', $contents);
+    }
+
+    public function testMkdirBuildsAMkdirBatchCommand()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->mkdir('/remote/path/newdir');
+
+        $this->assertStringContainsStringCompat('mkdir ', $contents);
+    }
+
+    public function testRmdirBuildsARmdirBatchCommand()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->rmdir('/remote/path/olddir');
+
+        $this->assertStringContainsStringCompat('rmdir ', $contents);
+    }
+
+    public function testRenameBuildsARenameBatchCommandWithBothPaths()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->rename('/remote/old.log', '/remote/new.log');
+
+        $this->assertStringContainsStringCompat('rename ', $contents);
+        $this->assertStringContainsStringCompat('/remote/old.log', $contents);
+        $this->assertStringContainsStringCompat('/remote/new.log', $contents);
+    }
+
+    public function testChmodAcceptsOctalIntLiteral()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->chmod('/remote/path/file.log', 0644);
+
+        $this->assertStringContainsStringCompat('chmod 644 ', $contents);
+    }
+
+    public function testChmodAcceptsStringMode()
+    {
+        $contents = null;
+        $this->captureBatchContents($contents);
+
+        $this->sftp->chmod('/remote/path/file.log', '755');
+
+        $this->assertStringContainsStringCompat('chmod 755 ', $contents);
+    }
+
+    public function testExistsReturnsTrueWhenLsSucceeds()
+    {
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturn(array('exitCode' => 0, 'stdout' => '', 'stderr' => ''));
+
+        $this->assertTrue($this->sftp->exists('/remote/path/file.log'));
+    }
+
+    public function testExistsReturnsFalseWhenLsFails()
+    {
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturn(array('exitCode' => 1, 'stdout' => '', 'stderr' => 'No such file'));
+
+        $this->assertFalse($this->sftp->exists('/remote/path/missing.log'));
+    }
+
+    /**
+     * Stubs runForeground() once so that, once the sftp call under test runs,
+     * $capturedContents (passed by reference) holds the batch file's content.
+     *
+     * @param string|null $capturedContents
+     *
+     * @return void
+     */
+    protected function captureBatchContents(&$capturedContents)
+    {
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturnUsing(function ($cmd) use (&$capturedContents) {
+                if (preg_match("/'-b'\\s+'([^']+)'/", $cmd, $matches)) {
+                    $capturedContents = file_get_contents($matches[1]);
+                }
+
+                return array('exitCode' => 0, 'stdout' => '', 'stderr' => '');
+            });
+    }
+
     /**
      * @param string $needle
      * @param string $haystack

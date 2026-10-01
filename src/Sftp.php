@@ -63,10 +63,95 @@ class Sftp extends AbstractSshProcess
                 continue;
             }
 
-            $names[] = $line;
+            // 真實 sftp 的 `ls -1 <dir>` 會把查詢路徑原樣接回每一行（例如
+            // `ls -1 /tmp/xxx` 印出 `/tmp/xxx/test.txt`，不是單純檔名），這裡
+            // 統一轉成 basename，符合「列出目錄內容」直覺預期的檔名陣列
+            $names[] = basename($line);
         }
 
         return $names;
+    }
+
+    /**
+     * 刪除遠端檔案
+     *
+     * @param string $remotePath
+     *
+     * @return void
+     */
+    public function delete($remotePath)
+    {
+        $this->runBatch('delete', 'rm ' . $this->quoteBatchArg($remotePath));
+    }
+
+    /**
+     * 建立遠端目錄
+     *
+     * @param string $remotePath
+     *
+     * @return void
+     */
+    public function mkdir($remotePath)
+    {
+        $this->runBatch('mkdir', 'mkdir ' . $this->quoteBatchArg($remotePath));
+    }
+
+    /**
+     * 刪除遠端目錄（目錄必須是空的）
+     *
+     * @param string $remotePath
+     *
+     * @return void
+     */
+    public function rmdir($remotePath)
+    {
+        $this->runBatch('rmdir', 'rmdir ' . $this->quoteBatchArg($remotePath));
+    }
+
+    /**
+     * 重新命名/搬移遠端檔案或目錄
+     *
+     * @param string $fromPath
+     * @param string $toPath
+     *
+     * @return void
+     */
+    public function rename($fromPath, $toPath)
+    {
+        $this->runBatch('rename', 'rename ' . $this->quoteBatchArg($fromPath) . ' ' . $this->quoteBatchArg($toPath));
+    }
+
+    /**
+     * 修改遠端檔案權限。$mode 可以傳 PHP 的 8 進位整數字面值（如 0644）或字串（如 '644'）
+     *
+     * @param string $remotePath
+     * @param int|string $mode
+     *
+     * @return void
+     */
+    public function chmod($remotePath, $mode)
+    {
+        $modeString = is_int($mode) ? decoct($mode) : $mode;
+
+        $this->runBatch('chmod', 'chmod ' . $modeString . ' ' . $this->quoteBatchArg($remotePath));
+    }
+
+    /**
+     * 判斷遠端路徑是否存在（檔案或目錄皆可）
+     *
+     * @param string $remotePath
+     *
+     * @return bool
+     */
+    public function exists($remotePath)
+    {
+        try {
+            $this->runBatch('exists', 'ls ' . $this->quoteBatchArg($remotePath));
+        } catch (SftpException $e) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -82,7 +167,7 @@ class Sftp extends AbstractSshProcess
 
         file_put_contents($batchFile, $batchCommand . "\n");
 
-        $args = $this->sshOptions();
+        $args = $this->sshOptions('-P');
         $args[] = '-q';
         $args[] = '-b';
         $args[] = $batchFile;

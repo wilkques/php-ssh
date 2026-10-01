@@ -19,7 +19,7 @@ class Exec extends AbstractSshProcess
      */
     public function exec($commandLine)
     {
-        $args = $this->sshOptions();
+        $args = $this->sshOptions('-p');
         $args[] = $this->getUser() . '@' . $this->getSshIp();
         $args[] = $commandLine;
 

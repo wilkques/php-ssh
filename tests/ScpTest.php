@@ -72,6 +72,67 @@ class ScpTest extends TestCase
         $this->scp->get('/remote/forbidden', '/local/forbidden');
     }
 
+    public function testPutWithoutRecursiveOmitsDashR()
+    {
+        $capturedCmd = null;
+        $this->captureCommand($capturedCmd);
+
+        $this->scp->put('/remote/path/dir', '/local/path/dir');
+
+        $this->assertStringNotContainsStringCompat("'-r'", $capturedCmd);
+    }
+
+    public function testPutWithRecursiveAddsDashR()
+    {
+        $capturedCmd = null;
+        $this->captureCommand($capturedCmd);
+
+        $this->scp->put('/remote/path/dir', '/local/path/dir', true);
+
+        $this->assertStringContainsStringCompat("'-r'", $capturedCmd);
+    }
+
+    public function testGetWithRecursiveAddsDashR()
+    {
+        $capturedCmd = null;
+        $this->captureCommand($capturedCmd);
+
+        $this->scp->get('/remote/path/dir', '/local/path/dir', true);
+
+        $this->assertStringContainsStringCompat("'-r'", $capturedCmd);
+    }
+
+    public function testPortUsesUppercasePFlag()
+    {
+        $this->scp->setPort(2222);
+
+        $capturedCmd = null;
+        $this->captureCommand($capturedCmd);
+
+        $this->scp->put('/remote/path/file.log', '/local/path/file.log');
+
+        $this->assertStringContainsStringCompat("'-P' '2222'", $capturedCmd);
+    }
+
+    /**
+     * Stubs runForeground() once so that, once the scp call under test runs,
+     * $capturedCmd (passed by reference) holds the built command line.
+     *
+     * @param string|null $capturedCmd
+     *
+     * @return void
+     */
+    protected function captureCommand(&$capturedCmd)
+    {
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturnUsing(function ($cmd) use (&$capturedCmd) {
+                $capturedCmd = $cmd;
+
+                return array('exitCode' => 0, 'stdout' => '', 'stderr' => '');
+            });
+    }
+
     /**
      * @param string $needle
      * @param string $haystack
@@ -87,5 +148,22 @@ class ScpTest extends TestCase
         }
 
         $this->assertContains($needle, $haystack);
+    }
+
+    /**
+     * @param string $needle
+     * @param string $haystack
+     *
+     * @return void
+     */
+    protected function assertStringNotContainsStringCompat($needle, $haystack)
+    {
+        if (method_exists($this, 'assertStringNotContainsString')) {
+            $this->assertStringNotContainsString($needle, $haystack);
+
+            return;
+        }
+
+        $this->assertNotContains($needle, $haystack);
     }
 }

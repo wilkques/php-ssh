@@ -83,4 +83,189 @@ class ExecTest extends TestCase
 
         $this->assertFalse($capturedAskPass);
     }
+
+    public function testDefaultCommandLineIncludesStrictHostKeyCheckingAndConnectTimeout()
+    {
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat("StrictHostKeyChecking=accept-new", $capturedCmd);
+        $this->assertStringContainsStringCompat("ConnectTimeout=30", $capturedCmd);
+    }
+
+    public function testSetPortAddsLowercasePFlag()
+    {
+        $this->exec->setPort(2222);
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat("'-p' '2222'", $capturedCmd);
+        $this->assertStringNotContainsStringCompat("'-P' '2222'", $capturedCmd);
+    }
+
+    public function testSetStrictHostKeyCheckingOverridesTheDefault()
+    {
+        $this->exec->setStrictHostKeyChecking('yes');
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat('StrictHostKeyChecking=yes', $capturedCmd);
+        $this->assertStringNotContainsStringCompat('StrictHostKeyChecking=accept-new', $capturedCmd);
+    }
+
+    public function testSetKnownHostsFileAddsOption()
+    {
+        $this->exec->setKnownHostsFile('/tmp/my_known_hosts');
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat('UserKnownHostsFile=/tmp/my_known_hosts', $capturedCmd);
+    }
+
+    public function testSetProxyJumpAddsJFlag()
+    {
+        $this->exec->setProxyJump('jumpuser@jumphost:2200');
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat("'-J' 'jumpuser@jumphost:2200'", $capturedCmd);
+    }
+
+    public function testSetCompressionAddsCFlag()
+    {
+        $this->exec->setCompression();
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat("'-C'", $capturedCmd);
+    }
+
+    public function testCompressionFlagOmittedByDefault()
+    {
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringNotContainsStringCompat("'-C'", $capturedCmd);
+    }
+
+    public function testSetTimeoutChangesConnectTimeout()
+    {
+        $this->exec->setTimeout(5);
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat('ConnectTimeout=5', $capturedCmd);
+    }
+
+    public function testAddOptionAppendsArbitraryDashOFlag()
+    {
+        $this->exec->addOption('ServerAliveInterval', '60');
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat('ServerAliveInterval=60', $capturedCmd);
+    }
+
+    public function testSetMultiplexingAddsControlMasterOptions()
+    {
+        $this->exec->setMultiplexing(true, '5m');
+
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringContainsStringCompat('ControlMaster=auto', $capturedCmd);
+        $this->assertStringContainsStringCompat('ControlPersist=5m', $capturedCmd);
+        $this->assertStringContainsStringCompat('ControlPath=' . $this->exec->getControlPath(), $capturedCmd);
+    }
+
+    public function testMultiplexingOmittedByDefault()
+    {
+        $capturedCmd = $this->captureCommand();
+
+        $this->assertStringNotContainsStringCompat('ControlMaster', $capturedCmd);
+    }
+
+    public function testCloseMultiplexedConnectionIsNoopWhenNeverEnabled()
+    {
+        $this->runner->shouldReceive('runForeground')->never();
+
+        $this->exec->closeMultiplexedConnection();
+
+        // The ->never() expectation above is verified by Mockery::close() in
+        // tearDown(); this asserts the class's own observable state too.
+        $this->assertNull($this->peek($this->exec, 'controlPath'));
+    }
+
+    public function testCloseMultiplexedConnectionRunsSshDashOExitWhenEnabled()
+    {
+        $this->exec->setMultiplexing(true);
+
+        $capturedCmd = null;
+
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturnUsing(function ($cmd) use (&$capturedCmd) {
+                $capturedCmd = $cmd;
+
+                return array('exitCode' => 0, 'stdout' => '', 'stderr' => '');
+            });
+
+        $this->exec->closeMultiplexedConnection();
+
+        $this->assertStringContainsStringCompat("'-O' 'exit'", $capturedCmd);
+        $this->assertStringContainsStringCompat('deploy@10.10.2.58', $capturedCmd);
+    }
+
+    /**
+     * Runs exec() once, capturing and returning the built command line string.
+     *
+     * @return string
+     */
+    protected function captureCommand()
+    {
+        $capturedCmd = null;
+
+        $this->runner->shouldReceive('runForeground')
+            ->once()
+            ->andReturnUsing(function ($cmd) use (&$capturedCmd) {
+                $capturedCmd = $cmd;
+
+                return array('exitCode' => 0, 'stdout' => '', 'stderr' => '');
+            });
+
+        $this->exec->exec('true');
+
+        return $capturedCmd;
+    }
+
+    /**
+     * @param string $needle
+     * @param string $haystack
+     *
+     * @return void
+     */
+    protected function assertStringContainsStringCompat($needle, $haystack)
+    {
+        if (method_exists($this, 'assertStringContainsString')) {
+            $this->assertStringContainsString($needle, $haystack);
+
+            return;
+        }
+
+        $this->assertContains($needle, $haystack);
+    }
+
+    /**
+     * @param string $needle
+     * @param string $haystack
+     *
+     * @return void
+     */
+    protected function assertStringNotContainsStringCompat($needle, $haystack)
+    {
+        if (method_exists($this, 'assertStringNotContainsString')) {
+            $this->assertStringNotContainsString($needle, $haystack);
+
+            return;
+        }
+
+        $this->assertNotContains($needle, $haystack);
+    }
 }
