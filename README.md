@@ -1,5 +1,11 @@
 # wilkques/ssh
 
+[![CI](https://github.com/wilkques/ssh/actions/workflows/ci.yml/badge.svg)](https://github.com/wilkques/ssh/actions/workflows/ci.yml)
+[![Latest Stable Version](https://img.shields.io/packagist/v/wilkques/ssh.svg)](https://packagist.org/packages/wilkques/ssh)
+[![PHP Version Require](https://img.shields.io/packagist/php-v/wilkques/ssh.svg)](https://packagist.org/packages/wilkques/ssh)
+[![Total Downloads](https://img.shields.io/packagist/dt/wilkques/ssh.svg)](https://packagist.org/packages/wilkques/ssh)
+[![License](https://img.shields.io/packagist/l/wilkques/ssh.svg)](https://packagist.org/packages/wilkques/ssh)
+
 [English](README.md) | [繁體中文](README_ZH.md)
 
 SSH local port-forward tunneling, remote command execution, and SFTP/SCP file transfer for PHP.
