@@ -43,6 +43,9 @@ class SftpPipeIntegrationTest extends TestCase
     /** @var string */
     protected $serverRoot;
 
+    /** @var bool */
+    protected $isWindows;
+
     protected function additionalSetUp()
     {
         $this->serverRoot = $this->tmpDir . '/server-root';
@@ -74,8 +77,8 @@ class SftpPipeIntegrationTest extends TestCase
             $this->fail('Failed to launch the fake SFTP server process.');
         }
 
-        $isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
-        $transport = new ProcessTransport($runner, $process, $pipes, $stderrFile, $isWindows);
+        $this->isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+        $transport = new ProcessTransport($runner, $process, $pipes, $stderrFile, $this->isWindows);
 
         // PHP 5.3 closures don't auto-bind $this, so this deliberately only
         // builds a plain value object — no $this->assert*()/$this->method()
@@ -168,7 +171,17 @@ class SftpPipeIntegrationTest extends TestCase
 
         $attrs = $this->channel->expectAttrs(SftpPacket::TYPE_LSTAT, SftpPacket::packString('/renamed.txt'), 'lstat');
 
-        $this->assertSame(0600, $attrs['permissions'] & 0777);
+        if (!$this->isWindows) {
+            // Windows' chmod() can't produce POSIX-exact permission bits —
+            // NTFS has no real rwxrwxrwx model, so PHP's chmod() there only
+            // toggles the read-only DOS attribute and ignores the rest of
+            // the requested mode (well-documented PHP/Windows behavior, and
+            // confirmed directly: real Windows CI reported 0666 back
+            // for a requested 0600). The SETSTAT/LSTAT wire exchange above
+            // already proves the protocol round trip itself worked — this
+            // byte-exact check only adds anything on a real POSIX filesystem.
+            $this->assertSame(0600, $attrs['permissions'] & 0777);
+        }
 
         $this->channel->expectStatusOk(
             SftpPacket::TYPE_MKDIR,
