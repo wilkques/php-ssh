@@ -108,7 +108,7 @@ class ScpTest extends TestCase
         $this->scp->put('/remote/path/file.log', '/local/path/file.log');
 
         $this->assertStringContainsStringCompat('scp', $capturedCmd);
-        $this->assertStringContainsStringCompat("'-O'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-O'), $capturedCmd);
         $this->assertStringContainsStringCompat('/local/path/file.log', $capturedCmd);
         $this->assertStringContainsStringCompat('deploy@10.10.2.58:/remote/path/file.log', $capturedCmd);
     }
@@ -129,7 +129,7 @@ class ScpTest extends TestCase
 
         $this->scp->get('/remote/path/file.log', '/local/path/file.log');
 
-        $this->assertStringContainsStringCompat("'-O'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-O'), $capturedCmd);
         $this->assertStringContainsStringCompat('deploy@10.10.2.58:/remote/path/file.log', $capturedCmd);
         $this->assertStringContainsStringCompat('/local/path/file.log', $capturedCmd);
     }
@@ -156,7 +156,7 @@ class ScpTest extends TestCase
 
         $this->scp->put('/remote/path/dir', '/local/path/dir');
 
-        $this->assertStringNotContainsStringCompat("'-r'", $capturedCmd);
+        $this->assertStringNotContainsStringCompat($this->quotedArg('-r'), $capturedCmd);
     }
 
     public function testLegacyPutWithRecursiveAddsDashR()
@@ -168,7 +168,7 @@ class ScpTest extends TestCase
 
         $this->scp->put('/remote/path/dir', '/local/path/dir', true);
 
-        $this->assertStringContainsStringCompat("'-r'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-r'), $capturedCmd);
     }
 
     public function testLegacyGetWithRecursiveAddsDashR()
@@ -180,7 +180,7 @@ class ScpTest extends TestCase
 
         $this->scp->get('/remote/path/dir', '/local/path/dir', true);
 
-        $this->assertStringContainsStringCompat("'-r'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-r'), $capturedCmd);
     }
 
     public function testLegacyPortUsesUppercasePFlag()
@@ -193,7 +193,7 @@ class ScpTest extends TestCase
 
         $this->scp->put('/remote/path/file.log', '/local/path/file.log');
 
-        $this->assertStringContainsStringCompat("'-P' '2222'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-P') . ' ' . $this->quotedArg('2222'), $capturedCmd);
     }
 
     public function testSetProgressWithLegacyThrows()
@@ -384,6 +384,21 @@ class ScpTest extends TestCase
 
                 return array('exitCode' => 0, 'stdout' => '', 'stderr' => '');
             });
+    }
+
+    /**
+     * escapeshellarg() quotes with '...' on Unix and "..." on Windows —
+     * hardcoding either one makes a test fail on the other platform.
+     * Building the expected fragment through the same function
+     * buildCommandLine() itself uses keeps the assertion correct on both.
+     *
+     * @param string $value
+     *
+     * @return string
+     */
+    protected function quotedArg($value)
+    {
+        return escapeshellarg($value);
     }
 
     /**

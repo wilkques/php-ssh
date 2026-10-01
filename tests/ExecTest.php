@@ -98,8 +98,8 @@ class ExecTest extends TestCase
 
         $capturedCmd = $this->captureCommand();
 
-        $this->assertStringContainsStringCompat("'-p' '2222'", $capturedCmd);
-        $this->assertStringNotContainsStringCompat("'-P' '2222'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-p') . ' ' . $this->quotedArg('2222'), $capturedCmd);
+        $this->assertStringNotContainsStringCompat($this->quotedArg('-P') . ' ' . $this->quotedArg('2222'), $capturedCmd);
     }
 
     public function testSetStrictHostKeyCheckingOverridesTheDefault()
@@ -127,7 +127,7 @@ class ExecTest extends TestCase
 
         $capturedCmd = $this->captureCommand();
 
-        $this->assertStringContainsStringCompat("'-J' 'jumpuser@jumphost:2200'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-J') . ' ' . $this->quotedArg('jumpuser@jumphost:2200'), $capturedCmd);
     }
 
     public function testSetCompressionAddsCFlag()
@@ -136,14 +136,14 @@ class ExecTest extends TestCase
 
         $capturedCmd = $this->captureCommand();
 
-        $this->assertStringContainsStringCompat("'-C'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-C'), $capturedCmd);
     }
 
     public function testCompressionFlagOmittedByDefault()
     {
         $capturedCmd = $this->captureCommand();
 
-        $this->assertStringNotContainsStringCompat("'-C'", $capturedCmd);
+        $this->assertStringNotContainsStringCompat($this->quotedArg('-C'), $capturedCmd);
     }
 
     public function testSetTimeoutChangesConnectTimeout()
@@ -209,7 +209,7 @@ class ExecTest extends TestCase
 
         $this->exec->closeMultiplexedConnection();
 
-        $this->assertStringContainsStringCompat("'-O' 'exit'", $capturedCmd);
+        $this->assertStringContainsStringCompat($this->quotedArg('-O') . ' ' . $this->quotedArg('exit'), $capturedCmd);
         $this->assertStringContainsStringCompat('deploy@10.10.2.58', $capturedCmd);
     }
 
@@ -233,6 +233,21 @@ class ExecTest extends TestCase
         $this->exec->exec('true');
 
         return $capturedCmd;
+    }
+
+    /**
+     * escapeshellarg() quotes with '...' on Unix and "..." on Windows —
+     * hardcoding either one makes a test fail on the other platform.
+     * Building the expected fragment through the same function
+     * buildCommandLine() itself uses keeps the assertion correct on both.
+     *
+     * @param string $value
+     *
+     * @return string
+     */
+    protected function quotedArg($value)
+    {
+        return escapeshellarg($value);
     }
 
     /**
