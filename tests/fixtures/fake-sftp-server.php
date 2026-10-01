@@ -245,6 +245,18 @@ while (true) {
                 $localPath = fakeSftpServerResolvePath($root, $path);
             }
 
+            if ($localPath !== null) {
+                // PHP caches stat() results per path for the life of the
+                // process; this server is long-lived (one process serves
+                // every request over the channel's lifetime), so without
+                // this, an FSTAT/STAT/LSTAT of a path this same process
+                // already wrote to earlier (e.g. a resumed transfer:
+                // put() writes & closes a handle, then a later get() on
+                // the same path FSTATs a *new* handle) can see a stale
+                // size left over from before that write.
+                clearstatcache(true, $localPath);
+            }
+
             if ($localPath === null || !file_exists($localPath)) {
                 fakeSftpServerSendStatus($stdout, $id, SftpPacket::STATUS_NO_SUCH_FILE, 'No such file');
                 break;
